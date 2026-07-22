@@ -1,0 +1,21 @@
+# scratch outputs
+out/
+
+# python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# fixture PDFs are fetched, not committed (see fixtures/MANIFEST.md)
+fixtures/*.pdf
+fixtures/private/
+
+# rust (later)
+target/
+
+# models are cached outside the repo; never commit weights
+*.onnx
+*.safetensors
+
+.DS_Store

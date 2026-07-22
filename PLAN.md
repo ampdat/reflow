@@ -128,3 +128,4 @@ Boox Palma / Android on-device conversion and iOS share-sheet → convert → re
 |------|-----------|------|-------|
 | 2026-07-21 | — | — | Plan rewritten: Markdown-first (Obsidian quality → e-reader delivery → plugin → ONNX port → mobile later) |
 | 2026-07-21 | M1 | — | Started: uv scaffold + Docling bootstrap |
+| 2026-07-21 | M1 | — | First fixture converts end-to-end (attention.pdf: 15 pp, 6 figures, MD tables, LaTeX math; 177 s warm). Contract tests pass. Remaining for Gate 1: 4 more fixtures, numeric-fidelity + LaTeX-rate checks, human Obsidian verdicts |
