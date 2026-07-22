@@ -14,11 +14,13 @@ Strategy in one paragraph: **prove reading quality first** (Markdown in Obsidian
 ## Artifact contract (freeze at M1)
 
 ```
-out/<job>/
-  document.md     # canonical: headings, MD/HTML tables, $LaTeX$ math, figure refs
-  images/         # extracted figures, stable names
-  meta.json       # source, engine id+version, page count, timings, warnings
-  document.epub   # M2+
+out/<Paper Title>/  # folder named from the extracted title — drops into a vault as-is
+  document.md       # YAML frontmatter properties (title, source, author, created,
+                    # tags — Obsidian web-clipper style), then headings, MD/HTML
+                    # tables, $LaTeX$ math (MathJax-safe), figure refs
+  images/           # extracted figures, stable names
+  meta.json         # source, title, engine id+version, page count, timings, warnings
+  document.epub     # M2+
 ```
 
 `meta.json.engine` labels the path honestly: `python-docling-bootstrap` now, `onnx-portable` later. Add fields rather than inventing parallel layouts.
