@@ -1,0 +1,16 @@
+{
+  "title_contains": "BERT",
+  "min_headings": 8,
+  "min_images": 1,
+  "min_math_blocks": 0,
+  "required_substrings": [
+    "deep bidirectional representations",
+    "masked language model",
+    "next sentence prediction",
+    "Ablation Studies",
+    "110M",
+    "340M"
+  ],
+  "required_table_cells": ["93.2", "86.7"],
+  "forbidden_substrings": ["GLYPH"]
+}

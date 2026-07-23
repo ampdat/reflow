@@ -1,0 +1,14 @@
+{
+  "title_contains": "Research Findings",
+  "min_headings": 4,
+  "min_images": 0,
+  "min_math_blocks": 0,
+  "required_substrings": [
+    "positive predictive value",
+    "Corollary",
+    "pre-study",
+    "Research Findings Are False"
+  ],
+  "required_table_cells": [],
+  "forbidden_substrings": ["GLYPH"]
+}

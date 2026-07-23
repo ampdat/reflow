@@ -37,12 +37,9 @@ def test_fix_formula_wraps_alignment_in_aligned():
 
 @pytest.mark.slow
 @pytest.mark.skipif(not FIXTURE.is_file(), reason="run scripts/fetch_fixtures.sh first")
-def test_convert_contract(tmp_path):
-    assert main(["convert", str(FIXTURE), "--out", str(tmp_path)]) == 0
-
-    out_dirs = [d for d in tmp_path.iterdir() if (d / "document.md").is_file()]
-    assert len(out_dirs) == 1, "expected one title-named output folder"
-    out = out_dirs[0]
+def test_convert_contract(convert_cached):
+    meta = convert_cached(FIXTURE)
+    out = Path(meta["out_dir"])
     assert "attention" in out.name.lower(), "folder should be named from the paper title"
 
     md = (out / "document.md").read_text(encoding="utf-8")

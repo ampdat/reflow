@@ -131,3 +131,4 @@ Boox Palma / Android on-device conversion and iOS share-sheet → convert → re
 | 2026-07-21 | — | — | Plan rewritten: Markdown-first (Obsidian quality → e-reader delivery → plugin → ONNX port → mobile later) |
 | 2026-07-21 | M1 | — | Started: uv scaffold + Docling bootstrap |
 | 2026-07-21 | M1 | — | First fixture converts end-to-end (attention.pdf: 15 pp, 6 figures, MD tables, LaTeX math; 177 s warm). Contract tests pass. Remaining for Gate 1: 4 more fixtures, numeric-fidelity + LaTeX-rate checks, human Obsidian verdicts |
+| 2026-07-22 | M1 | — | Vault-ready output (title folder, frontmatter, MathJax-safe LaTeX). Fixture suite: attention/bert/vae/ioannidis with ground-truth expectation tests (olmOCR-bench style) — 10 passed. Titles, figures, tables, reading order all verified. ⚠ Perf finding: formula enrichment is per-formula and dominates — vae (equation-dense, 14 pp) took 73 min vs bert 48 s; investigate accelerator (MPS) settings / batching before Gate 1 |

@@ -1,0 +1,14 @@
+{
+  "title_contains": "Auto-Encoding Variational Bayes",
+  "min_headings": 5,
+  "min_images": 1,
+  "min_math_blocks": 5,
+  "required_substrings": [
+    "reparameterization",
+    "variational lower bound",
+    "Stochastic Gradient Variational Bayes",
+    "MNIST"
+  ],
+  "required_table_cells": [],
+  "forbidden_substrings": ["GLYPH"]
+}

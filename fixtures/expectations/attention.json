@@ -1,0 +1,14 @@
+{
+  "title_contains": "Attention Is All You Need",
+  "min_headings": 8,
+  "min_images": 4,
+  "min_math_blocks": 3,
+  "required_substrings": [
+    "positional encoding",
+    "multi-head attention",
+    "byte-pair encoding",
+    "BLEU"
+  ],
+  "required_table_cells": ["28.4", "41.8"],
+  "forbidden_substrings": ["GLYPH"]
+}
