@@ -207,6 +207,33 @@ to a pdf.js-text-only fast path rather than attempting VLM-on-WASM.
 
 ---
 
+## 4b. Measured: engine-js on the onnxruntime-node CPU provider (M2, 2026-07-23)
+
+First end-to-end runs of the TS engine (`engine-js/`, granite-docling-258M-ONNX under
+transformers.js → onnxruntime-node) on the M4 Air, `attention.pdf` page 1. **Finding: on the ORT
+CPU provider, every quantized variant fails — fp32 is the only correct option, and also the
+fastest correct one.**
+
+| dtype (uniform) | Result | s/page |
+|---|---|---|
+| `q4f16` (WebGPU default) | **Garbage** — degenerate repetition, zero DocTags tokens | ~140 |
+| `q8` (`_quantized`, int8) | **Garbage** — "atXv 1706.03762", repetition, BLEU numbers lost | ~430 (slower!) |
+| **`fp32`** | **Correct** — clean DocTags, title extracted, 28.4/41.8 BLEU preserved, running-header dropped | ~250 |
+
+Notes:
+- `q4f16`/`fp16` are WebGPU-oriented; the ORT CPU provider mishandles the fp16/q4 matmuls (and the
+  fp16 vision encoder additionally trips `SimplifiedLayerNormFusion` at load — worked around by
+  disabling graph optimization on that path only).
+- The decoder ships only `fp32/fp16/q4/q4f16/quantized` (no `_int8`), so the CPU int8 option is
+  `q8`→`_quantized` — and it is both wrong and slower here (matches the SmolDocling quantized-ONNX
+  gibberish reports, §3).
+- **Implication:** the Node/CPU CLI is correct at fp32 but ~4 min/page — fine as the M3 parity
+  harness (run the fixture suite in the background), **not** interactive. Usable speed comes from
+  **WebGPU** (q4f16, where it works), i.e. the Electron/Obsidian (M4) and browser (M6) targets, not
+  CPU quantization. Re-test int8/q8 only if a future export or ORT-node WebGPU EP changes the math.
+
+---
+
 ## 4a. Runtime alternative evaluated: LiteRT.js (Google, Jul 2026) — verdict: stick with ONNX, watch
 
 Google announced [LiteRT.js](https://developers.googleblog.com/litertjs-googles-high-performance-web-ai-inference/)

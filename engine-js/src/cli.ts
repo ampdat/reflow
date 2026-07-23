@@ -18,7 +18,7 @@ async function main(argv: string[]): Promise<number> {
   if (!command || command === "-h" || command === "--help") {
     process.stdout.write(
       "usage: pdf2md-js <convert|version>\n" +
-        "  convert <pdf> [--out DIR] [--no-formulas] [--ocr] [--device cpu|webgpu|auto] [--max-pages N]\n",
+        "  convert <pdf> [--out DIR] [--no-formulas] [--ocr] [--device cpu|webgpu|auto] [--dtype fp32|int8|q8|...] [--max-pages N]\n",
     );
     return command ? 0 : 2;
   }
@@ -38,6 +38,7 @@ async function main(argv: string[]): Promise<number> {
         ocr: { type: "boolean", default: false },
         device: { type: "string" },
         "max-pages": { type: "string" },
+        dtype: { type: "string" },
       },
     });
 
@@ -55,17 +56,19 @@ async function main(argv: string[]): Promise<number> {
     }
 
     const device = values.device as "cpu" | "webgpu" | "auto" | undefined;
+    const dtype = values.dtype as string | undefined;
     const maxPagesRaw = values["max-pages"] as string | undefined;
     const maxPages = maxPagesRaw ? Number(maxPagesRaw) : undefined;
     if (maxPages !== undefined && (!Number.isInteger(maxPages) || maxPages < 1)) {
       process.stderr.write(`error: --max-pages must be a positive integer\n`);
       return 2;
     }
+    const vlm = device || dtype ? { ...(device ? { device } : {}), ...(dtype ? { dtype } : {}) } : undefined;
     const meta = await convertPdf(pdfPath, values.out as string, {
       formulas: !(values["no-formulas"] as boolean),
       ocr: values.ocr as boolean,
       maxPages,
-      vlm: device ? { device } : undefined,
+      vlm,
     });
     process.stdout.write(
       `wrote ${meta.out_dir}/document.md ` +

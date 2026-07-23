@@ -110,12 +110,15 @@ DocTags→Markdown parser. No Python, no sidecar.
 - [x] `frontmatter.ts` / `meta.ts` — same artifact contract; adds `model`, `timings_ms`,
       `execution_providers`.
 - [x] `pdf.ts` — pdf.js raster + text layer + figure crops (`@napi-rs/canvas`).
-- [x] `vlm.ts` — transformers.js load of `onnx-community/granite-docling-258M-ONNX` (q4f16 default),
-      page image → DocTags; `max_new_tokens` cap as the runaway guard.
-- [ ] **First end-to-end convert** on `attention.pdf`: download weights (~190 MB), run, produce a
-      package a human would read. (Native `onnxruntime-node` install + first model run — the M2 gate.)
-- [ ] Record per-stage `timings_ms` and assert real ORT execution providers in `meta.json`
-      (never silent CPU fallback).
+- [x] `vlm.ts` — transformers.js load of `onnx-community/granite-docling-258M-ONNX` (device-aware
+      dtype: fp32 on CPU, q4f16 on WebGPU), page image → DocTags; `max_new_tokens` runaway guard.
+- [x] **First end-to-end convert** proven on `attention.pdf` page 1: clean DocTags → Markdown, title
+      extracted, running-header dropped, 28.4/41.8 BLEU numbers preserved. Four integration bugs
+      fixed (white canvas fill, processor arg order, device-aware dtype, cwd). `timings_ms` +
+      `execution_providers` recorded in `meta.json`.
+- [x] **Measured CPU dtype** (perf doc §4b): fp32 is the only correct dtype on the ORT CPU provider
+      (q4f16/q8 both garble); ~4 min/page. Usable speed = WebGPU (M4/M6), not CPU quant.
+- [ ] Full-document convert + fixture parity → **M3** (fp32 is slow but correct; run in background).
 
 ### Commands
 ```bash
@@ -129,10 +132,10 @@ npm run cli -- convert ../fixtures/attention.pdf --out out/   # downloads model 
 ### Gate 2 — "TS engine writes a real package"
 | Check | Pass? |
 |-------|-------|
-| `pdf2md-js convert` writes `document.md` + `images/` + `meta.json` (`engine: onnx-portable`) | |
+| `pdf2md-js convert` writes `document.md` + `images/` + `meta.json` (`engine: onnx-portable`) | ✅ |
 | Offline unit tests green (DocTags parser, MathJax repairs) | ✅ |
-| One fixture converts end-to-end; figures cropped, math as `$$LaTeX$$`, headings hierarchical | |
-| `meta.json` records model, per-stage timings, execution providers | |
+| One fixture converts end-to-end; math as `$$LaTeX$$`, headings hierarchical | ✅ page 1 (figures/full-doc → M3) |
+| `meta.json` records model, per-stage timings, execution providers | ✅ |
 
 ---
 
@@ -148,8 +151,9 @@ text layer.
       against the pdf.js text layer (`pdf.ts` already surfaces it); flag mismatches instead of
       trusting invented numbers.
 - [ ] LaTeX render-rate metric: fraction of `$$...$$` blocks that parse under MathJax (carried from M1).
-- [ ] Quantization sweep: q8/fp16 vs q4f16 decoder, scored by the same tests — pick the smallest
-      variant that holds quality (perf doc §3 precision policy).
+- [x] Quantization sweep on CPU — **done, dead-end** (perf doc §4b): q4f16 and q8 both garble on the
+      ORT CPU provider; fp32 is the CPU floor. The quant sweep that matters now is on **WebGPU**
+      (q4f16, where IBM's demo shows it works), deferred to the M4/M6 targets.
 - [ ] Human Obsidian verdict → `out/obsidian_results.md`: prefer the MD for ≥4/5 fixtures.
 - [ ] Two-stage variant (`granite-docling-2stage`) as the fallback if end-to-end reading order fails
       on two-column papers.
