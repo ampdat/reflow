@@ -99,6 +99,11 @@ export async function loadPdf(data: Uint8Array): Promise<LoadedPdf> {
       const page = await doc.getPage(index);
       const viewport = page.getViewport({ scale: RENDER_SCALE });
       const { canvas, context } = canvasFactory.create(viewport.width, viewport.height);
+      // pdf.js paints onto a transparent canvas — the page's "white" is unpainted.
+      // Without this fill, .rgb() collapses transparent+black text to an all-black
+      // image and the VLM emits degenerate garbage. Paint an opaque white page first.
+      context.fillStyle = "white";
+      context.fillRect(0, 0, canvas.width, canvas.height);
       await page.render({ canvasContext: context, viewport, canvasFactory }).promise;
 
       const width = canvas.width;

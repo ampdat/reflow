@@ -18,15 +18,30 @@ export const DEFAULT_PROMPT = "Convert this page to docling.";
 /** Per-subgraph precision. q4f16 decoder is the ~190 MB sweet spot; fp16 vision floor. */
 export type DtypeMap = Record<string, string>;
 
-export const DEFAULT_DTYPE: DtypeMap = {
+/** transformers.js accepts a single dtype string or a per-subgraph map. */
+export type Dtype = string | DtypeMap;
+
+/**
+ * WebGPU (browser) default: q4f16 decoder + fp16 towers — the ~190 MB sweet spot,
+ * and what IBM's demo ships. **Do not use on the ORT CPU provider**: fp16/q4
+ * matmuls garble there (and the fp16 vision encoder trips SimplifiedLayerNormFusion).
+ */
+export const WEBGPU_DTYPE: DtypeMap = {
   embed_tokens: "fp16",
   vision_encoder: "fp16",
   decoder_model_merged: "q4f16",
 };
 
+/**
+ * CPU (onnxruntime-node) default: fp32 everywhere — numerically correct on CPU,
+ * where fp16/q4 produce degenerate garbage. Larger/slower; M3 evaluates int8 as
+ * the CPU size/speed compromise, gated on the fixture numeric-fidelity tests.
+ */
+export const CPU_DTYPE = "fp32";
+
 export interface VlmOptions {
   modelId?: string;
-  dtype?: DtypeMap;
+  dtype?: Dtype;
   /** "cpu" (onnxruntime-node), "webgpu" (browser), or "auto". */
   device?: "cpu" | "webgpu" | "auto";
   /**
@@ -62,18 +77,25 @@ async function loadTransformers(): Promise<Transformers> {
 export async function loadVlm(opts: VlmOptions = {}): Promise<Vlm> {
   const t = await loadTransformers();
   const modelId = opts.modelId ?? DEFAULT_MODEL;
-  const dtype = opts.dtype ?? DEFAULT_DTYPE;
   const device = opts.device ?? "cpu";
+  const isCpu = device === "cpu";
+  // Device-aware default: fp16/q4 only on WebGPU; fp32 on the ORT CPU provider.
+  const dtype: Dtype = opts.dtype ?? (isCpu ? CPU_DTYPE : WEBGPU_DTYPE);
   const maxNewTokens = opts.maxNewTokens ?? 4096;
   const prompt = opts.prompt ?? DEFAULT_PROMPT;
 
-  const processor = await t.AutoProcessor.from_pretrained(modelId);
-  const model = await t.AutoModelForVision2Seq.from_pretrained(modelId, { dtype, device });
+  const modelOpts: Record<string, unknown> = { dtype, device };
+  // The SimplifiedLayerNormFusion crash is fp16-specific (an InsertedPrecisionFreeCast
+  // the fusion can't resolve). Only disable graph optimization when running fp16 towers.
+  if (!isCpu) modelOpts.session_options = { graphOptimizationLevel: "disabled" };
 
-  const decoderDtype = dtype.decoder_model_merged ?? "fp16";
+  const processor = await t.AutoProcessor.from_pretrained(modelId);
+  const model = await t.AutoModelForVision2Seq.from_pretrained(modelId, modelOpts);
+
+  const decoderDtype = typeof dtype === "string" ? dtype : (dtype.decoder_model_merged ?? "fp16");
   const modelLabel = `${modelId}@${decoderDtype}`;
   // Best-effort provider record; M2 tightens this to assert the real ORT EP.
-  const executionProviders = [device === "cpu" ? "cpu" : device];
+  const executionProviders = [isCpu ? "cpu" : device];
 
   return {
     modelLabel,
@@ -85,7 +107,8 @@ export async function loadVlm(opts: VlmOptions = {}): Promise<Vlm> {
         { role: "user", content: [{ type: "image" }, { type: "text", text: prompt }] },
       ];
       const text = processor.apply_chat_template(messages, { add_generation_prompt: true });
-      const inputs = await processor(image, text, { add_special_tokens: false });
+      // Idefics3/SmolVLM processor signature is _call(text, images) — text first.
+      const inputs = await processor(text, image);
 
       const generated = await model.generate({ ...inputs, max_new_tokens: maxNewTokens });
 
@@ -93,7 +116,11 @@ export async function loadVlm(opts: VlmOptions = {}): Promise<Vlm> {
       const promptLen = inputs.input_ids.dims.at(-1) as number;
       const trimmed = generated.slice(null, [promptLen, null]);
       const decoded: string[] = processor.batch_decode(trimmed, { skip_special_tokens: false });
-      return stripChrome(decoded[0] ?? "");
+      const raw = decoded[0] ?? "";
+      if (process.env.PDF2MD_DEBUG_DOCTAGS) {
+        process.stderr.write(`\n=== RAW DOCTAGS (${raw.length} chars) ===\n${raw}\n=== END ===\n`);
+      }
+      return stripChrome(raw);
     },
     dispose() {
       model?.dispose?.();

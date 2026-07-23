@@ -26,6 +26,8 @@ export interface ConvertOptions {
   /** VLM always transcribes formulas; kept for contract symmetry / meta record. */
   formulas?: boolean;
   ocr?: boolean;
+  /** Process at most this many pages (iteration/smoke-test knob; 0/undefined = all). */
+  maxPages?: number;
   vlm?: VlmOptions;
 }
 
@@ -50,8 +52,10 @@ export async function convertPdf(
   let inferenceMs = 0;
   let droppedSpans = false;
 
+  const lastPage = opts.maxPages ? Math.min(pdf.pageCount, opts.maxPages) : pdf.pageCount;
+
   try {
-    for (let p = 1; p <= pdf.pageCount; p++) {
+    for (let p = 1; p <= lastPage; p++) {
       const page = await pdf.renderPage(p);
 
       const tInfer = Date.now();
@@ -99,9 +103,12 @@ export async function convertPdf(
   const markdown = fm + body;
   await writeFile(join(outDir, "document.md"), markdown, "utf-8");
 
-  const warnings = warnImageOnly(markdown.length, pdf.pageCount, ocr);
+  const warnings = warnImageOnly(markdown.length, lastPage, ocr);
   if (droppedSpans) {
     warnings.push("table contained merged cells rendered blank — verify against source");
+  }
+  if (lastPage < pdf.pageCount) {
+    warnings.push(`processed only ${lastPage} of ${pdf.pageCount} pages (--max-pages)`);
   }
 
   const assembleMs = Date.now() - tAssemble;
