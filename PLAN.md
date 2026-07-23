@@ -35,15 +35,31 @@ out/<Paper Title>/  # folder named from the extracted title — drops into a vau
 
 ### Tasks
 
-- [ ] uv project: `pyproject.toml`, `src/pdf2md/`, `pdf2md` entry point (`convert`, `version`).
-- [ ] `convert` always writes `document.md` + `images/` + `meta.json` (contract above).
-- [ ] Figures: extracted to `images/`, referenced inline at the right position with captions.
-- [ ] Tables: Markdown tables (HTML fallback for row/col spans).
-- [ ] Math: `$...$` / `$$...$$` LaTeX via Docling formula enrichment; flag to disable.
-- [ ] Warn loudly on image-only pages (no silent empty success on scans).
-- [ ] Fixtures: ~5 arXiv papers (fetch script + MANIFEST): clean single-column, dense two-column, math-heavy, table-heavy, scanned/image-only.
-- [ ] `tests/`: automated checks per fixture — non-empty MD, heading hierarchy present, ≥1 image for figure fixtures, LaTeX render-parse rate, **no numeric table cell differs from source** on the table fixture.
-- [ ] Human protocol → `out/obsidian_results.md`: open each result in an Obsidian vault, one-line verdict per fixture.
+- [x] uv project: `pyproject.toml`, `src/pdf2md/`, `pdf2md` entry point (`convert`, `version`).
+- [x] `convert` always writes `document.md` + `images/` + `meta.json`; output folder is named
+      from the extracted title; `document.md` opens with Obsidian-style YAML properties.
+- [x] Figures: extracted to `images/`, referenced inline with captions.
+- [x] Tables: Markdown tables. (HTML fallback for row/col spans: pending — no fixture has hit it yet.)
+- [x] Math: `$$LaTeX$$` via Docling formula enrichment (`--no-formulas` to disable) + MathJax-repair
+      pass (brace balancing, `& & (N)` → `\tag{N}`, `aligned` wrapping).
+- [x] Warn loudly on image-only pages (no silent empty success on scans).
+- [x] Fixtures + expectations (see `fixtures/MANIFEST.md`): `attention`, `bert` (two-column, CC-BY),
+      `vae` (equation-dense), `ioannidis` (medical, CC-BY). Each has
+      `fixtures/expectations/<id>.json` pass/fail checks (olmOCR-bench style) with strings validated
+      against the raw PDF text layer — ground truth independent of the engine. Scanned fixture
+      deferred with OCR. `fixtures/private/*.pdf` (gitignored) auto-discovered for smoke checks.
+- [x] `tests/`: contract tests + per-fixture expectation tests (title, headings, figures, math-block
+      count, required phrases, exact numeric table cells, forbidden artifacts) + private-PDF smoke.
+      Session-scoped conversion cache; `-m "not slow"` for the fast subset. 10 passed / 1 skipped.
+- [ ] **Perf (blocks Gate 1 for math-heavy docs):** apply Track 1 items 1–4 of
+      [docs/perf-and-portability.md](./docs/perf-and-portability.md) — granite-docling formula
+      preset via MLX, `max_new_tokens` cap, `DOCLING_NUM_THREADS`, TableFormer FAST/MPS — and record
+      per-stage timings in `meta.json`. Baseline to beat: vae 73 min (formula stage on CPU);
+      target ~2–3 s/page. Fixture suite prices each change's quality delta.
+- [ ] LaTeX render-rate metric: report fraction of formulas that parse under MathJax (currently only
+      a min-count check).
+- [ ] Human protocol → `out/obsidian_results.md`: open each result in an Obsidian vault, one-line
+      verdict per fixture. (Converted packages staged in `out/` for inspection.)
 
 ### Commands
 
@@ -71,6 +87,24 @@ uv run pytest -q
 
 ---
 
+# M1.5 — Engine experiment: compact VLM vs modular pipeline
+
+**Goal:** price the entire VLM-vs-modular question with infrastructure we already have. Per
+[docs/perf-and-portability.md](./docs/perf-and-portability.md) §3: run
+granite-docling-258M (MLX, docling `VlmPipeline`) and the 2-stage variant — plus q8/q4f16 quantized
+builds — over the same fixtures, scored by the same expectation tests, timings recorded.
+
+**Why it matters:** if quality holds, the official granite-docling ONNX export running under
+transformers.js makes the portable engine **pure JS** — M3 loses its native sidecar and M4 loses
+the Rust port (see below). Key risk to watch: VLMs can *invent* table numbers; the
+numeric-fidelity checks are the arbiter ("never silently wrong").
+
+**Gate 1.5:** a written verdict in `docs/perf-and-portability.md` (or follow-up): VLM parity
+(adopt for portable path) / VLM fails (keep modular; Rust fallback for M4) — with fixture scores
+and s/page for each configuration.
+
+---
+
 # M2 — Easy local path to e-readers
 
 **Goal:** one command from the validated Markdown package to a book on each reader, honest about each path.
@@ -88,8 +122,11 @@ uv run pytest -q
 
 **Goal:** the empty-quadrant product: right-click a PDF in Obsidian → note + figures + math land in the vault. No API keys, no server, nothing uploads.
 
-- [ ] Thin JS plugin; conversion via native **sidecar** (desktop plugins can spawn processes) — sidecar is the same engine as the CLI.
-- [ ] Model download on first run with disclosure + checksums (plugin review requirement).
+- [ ] Engine embed, decided by Gate 1.5: **preferred** — pure JS (transformers.js +
+      granite-docling ONNX + pdf.js + a JS DocTags→Markdown parser; no sidecar, no Python;
+      perf doc §4). **Fallback** — thin JS plugin spawning a native sidecar (same engine as the CLI).
+- [ ] Model download on first run with disclosure + checksums (plugin review requirement; Smart
+      Connections precedent — policies ban remote code, not model data).
 - [ ] Vault craft: YAML frontmatter (title/authors/DOI/citekey), relative image links, optional provenance links to PDF pages (`[[paper.pdf#page=N]]`).
 
 **Gate 3:** fresh Obsidian install → plugin → converted paper in vault in under 2 minutes, offline after model cache.
@@ -98,13 +135,22 @@ uv run pytest -q
 
 # M4 — Portable engine (ONNX)
 
-**Goal:** replace the Python bootstrap with a portable ONNX core (Rust + `ort`, or equivalent) running the same model family — the engine that can later embed anywhere, including mobile.
+**Goal:** replace the Python bootstrap with a portable ONNX core running the same model family —
+the engine that can later embed anywhere, including mobile.
 
-- [ ] Assemble from parts (there is no ready-made "docling.rs": pdfium + layout ONNX + table + OCR + serialization). Time-boxed; go/no-go review if it drags.
-- [ ] **Parity gate:** M1's automated checks + fixtures are the spec; the portable engine must match the bootstrap's quality scores.
-- [ ] CoreML EP where it helps; assert providers in `meta.json` — never silent CPU fallback.
+Route decided by Gate 1.5:
 
-**Gate 4:** parity on fixtures, single-binary distribution, offline, licenses documented.
+- [ ] **VLM route (preferred if quality holds):** the JS core built in M3 (transformers.js +
+      granite-docling ONNX, DocTags parser, pdf.js loop) *is* the portable engine — package it as a
+      standalone TS library (`engine-js/`) reusable by plugin, browser extension, and Electron/Node
+      CLI; `meta.json.engine = "onnx-portable"`.
+- [ ] **Modular route (fallback):** Rust + `ort`, assembled from parts (heron layout ONNX exists;
+      TableFormer ONNX is community-only; CodeFormula has no export — this asymmetry favors the VLM
+      route). Time-boxed; go/no-go review if it drags.
+- [ ] **Parity gate either way:** M1's fixture suite is the spec; the portable engine must match the
+      bootstrap's quality scores. Assert execution providers in `meta.json` — never silent fallback.
+
+**Gate 4:** parity on fixtures, single-artifact distribution, offline after model cache, licenses documented.
 
 ---
 
@@ -132,3 +178,4 @@ Boox Palma / Android on-device conversion and iOS share-sheet → convert → re
 | 2026-07-21 | M1 | — | Started: uv scaffold + Docling bootstrap |
 | 2026-07-21 | M1 | — | First fixture converts end-to-end (attention.pdf: 15 pp, 6 figures, MD tables, LaTeX math; 177 s warm). Contract tests pass. Remaining for Gate 1: 4 more fixtures, numeric-fidelity + LaTeX-rate checks, human Obsidian verdicts |
 | 2026-07-22 | M1 | — | Vault-ready output (title folder, frontmatter, MathJax-safe LaTeX). Fixture suite: attention/bert/vae/ioannidis with ground-truth expectation tests (olmOCR-bench style) — 10 passed. Titles, figures, tables, reading order all verified. ⚠ Perf finding: formula enrichment is per-formula and dominates — vae (equation-dense, 14 pp) took 73 min vs bert 48 s; investigate accelerator (MPS) settings / batching before Gate 1 |
+| 2026-07-23 | M1 | — | Perf + portability research written up in docs/perf-and-portability.md (root causes: TableFormer/CodeFormula forced to CPU upstream; fix plan Track 1; granite-docling VLM + all-JS ONNX path). PLAN updated: perf work item in M1, new M1.5 engine experiment, M3/M4 route decision. Converted packages staged in out/ for human Obsidian review |
