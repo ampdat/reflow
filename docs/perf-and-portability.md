@@ -207,6 +207,37 @@ to a pdf.js-text-only fast path rather than attempting VLM-on-WASM.
 
 ---
 
+## 4a. Runtime alternative evaluated: LiteRT.js (Google, Jul 2026) — verdict: stick with ONNX, watch
+
+Google announced [LiteRT.js](https://developers.googleblog.com/litertjs-googles-high-performance-web-ai-inference/)
+(npm `@litertjs/core`), a browser JS binding of LiteRT that runs `.tflite` models on WebGPU / WebNN /
+WASM-XNNPACK. Evaluated as a replacement for transformers.js+ONNX; **decision: keep ONNX**, for
+reasons of model availability, not runtime quality:
+
+- **No granite-docling `.tflite` exists.** Only the [official ONNX export](https://huggingface.co/onnx-community/granite-docling-258M-ONNX)
+  is published/maintained. The Idefics3 architecture *is* convertible in principle — a sibling,
+  [litert-community/SmolVLM-256M-Instruct](https://huggingface.co/litert-community/SmolVLM-256M-Instruct),
+  was converted via `ai-edge-torch` with KV cache — **but that export explicitly does not run in the
+  browser** (its card notes AI Edge Torch VLMs are unsupported on the MediaPipe LLM Inference API;
+  runtime is custom C++/Android/Colab). There is no documented JS path to drive a multi-signature VLM
+  (vision encoder + autoregressive decoder + KV cache) from LiteRT.js today.
+- **No Node story.** LiteRT.js is browser-focused (WebGPU/WASM); nothing documents the
+  onnxruntime-node/Electron path we rely on for the CLI and desktop plugin.
+- **Generative LLMs are a separate product** (LiteRT-LM.js), not `@litertjs/core`, and image-text-to-text
+  is not shown for it.
+- **Perf claims are vs TensorFlow.js JS kernels ("up to 3×", M4 MacBook), not vs ONNX Runtime Web** —
+  no evidence it beats our actual incumbent for this model.
+
+By contrast transformers.js already ships AutoProcessor + chat template + `generate()` + tokenizer for
+granite-docling in **both browser and Node**, with IBM's own WebGPU demo. Switching would mean
+self-converting a 258M VLM *and* writing the web autoregressive runtime — high risk, unproven reward.
+
+**Re-open the question if any of:** (a) a `litert-community`/IBM **granite-docling `.tflite`** appears;
+(b) **LiteRT-LM.js documents in-browser Idefics3-class image-text-to-text**; (c) a published
+**LiteRT.js-vs-ORT-Web** benchmark shows a real speedup on a comparable VLM. Then run a time-boxed spike.
+
+---
+
 ## 5. Key sources
 
 Pipeline/timing: [Docling tech report](https://arxiv.org/html/2408.09869v5) ·

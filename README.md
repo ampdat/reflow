@@ -62,10 +62,11 @@ PDF ─┬─ fast tier: text-layer extract + layout heuristics (clean PDFs)
              or image)
 ```
 
-- **Engine, bootstrap:** Python Docling (MIT) — fastest path to answering the only question that matters first: *is the quality there?*
-- **Engine, target:** portable **ONNX** core running the same model family — one headless engine that later embeds in an Obsidian plugin, a Mac app, and eventually on-device mobile. Two candidate routes are being priced (see [docs/perf-and-portability.md](./docs/perf-and-portability.md)): a compact VLM (granite-docling-258M, official ONNX export, runs under transformers.js — pure-JS, no sidecar) vs. a Rust port of the modular pipeline.
-- **Distribution ladder:** CLI (uv/Homebrew) → Obsidian plugin (thin JS over a native sidecar; desktop plugins can spawn processes) → Mac app → mobile.
+- **Engine, target (primary):** a portable **TypeScript + ONNX** core in [`engine-js/`](./engine-js/) — a single compact VLM ([granite-docling-258M](https://huggingface.co/onnx-community/granite-docling-258M-ONNX), official ONNX export, Apache-2.0) running under [transformers.js](https://huggingface.co/blog/transformersjs-v4). Full page image → **DocTags** → Markdown, entirely in JS: no Python, no sidecar binary. The *same* core embeds in a Node CLI, an Obsidian desktop plugin, a browser extension, and eventually mobile — only `device`/`dtype` change. Rationale and route comparison: [docs/perf-and-portability.md](./docs/perf-and-portability.md).
+- **Engine, bootstrap (reference oracle):** Python Docling (MIT) — the fast path that answered *is the quality there?* and froze the artifact contract + fixture suite. Retained as the **modular fallback** and a **numeric cross-check** for the VLM (it copies table cells from the PDF text layer; the VLM can invent them). Not on the shipping path.
+- **Distribution ladder:** TS Node CLI (`pdf2md-js`) → Obsidian desktop plugin (pure JS: transformers.js + pdf.js, no sidecar) → browser extension → mobile.
 - **Math policy:** LaTeX-first (`$...$`) — Obsidian renders it natively; images only as low-confidence fallback and for e-ink EPUB export.
+- **Never silently wrong (VLM hedge):** VLM-emitted numeric table cells are reconciled against the pdf.js text layer; the fixture numeric-fidelity checks are the arbiter before any quantized build becomes default.
 - **arXiv shortcut (later):** papers with arXiv IDs can skip PDF parsing entirely — fetch LaTeX source/HTML and normalize into the same IR, losslessly.
 
 ## End goal (not planned out)
@@ -87,11 +88,11 @@ Quality is measured, not vibed. `fixtures/` holds a curated paper set — attent
 
 ## Status
 
-Milestone 1 (PDF → vault-quality Markdown on Mac) in progress — see [PLAN.md](./PLAN.md):
+**M1 done → pivoted to the portable TypeScript + ONNX engine (M2, current).** See [PLAN.md](./PLAN.md).
 
-- ✅ CLI (`uv run pdf2md convert paper.pdf`) → title-named vault-ready folder: `document.md` with Obsidian frontmatter properties + `images/` + `meta.json`
-- ✅ Figures, Markdown tables, and MathJax-safe `$$LaTeX$$` (brace balancing, `\tag{}` equation numbers, `aligned` wrapping) verified on all four fixtures — 10/11 tests green
-- ⚠ Perf: formula enrichment dominates on equation-dense papers (73 min for one 14-page paper — upstream forces the formula/table models onto CPU). Fix plan + portability research (Obsidian plugin → browser → mobile, all-JS via ONNX): [docs/perf-and-portability.md](./docs/perf-and-portability.md)
+- ✅ **M1 (Python bootstrap, now frozen reference oracle):** `pdf2md convert` → title-named vault folder (`document.md` + `images/` + `meta.json`); figures, Markdown tables, MathJax-safe `$$LaTeX$$` verified on all four fixtures. Its lasting output is the frozen artifact contract + the engine-independent fixture suite.
+- 🔨 **M2 (`engine-js/`, pure JS):** pdf.js + granite-docling-258M ONNX (transformers.js) + a hand-written DocTags→Markdown parser. Scaffold landed and type-checks; the DocTags parser + MathJax repairs are **offline unit-tested (14/14 green)**. Remaining: first end-to-end model run (~190 MB q4f16 download) and fixture parity (M3).
+- 📄 Perf finding that triggered the pivot (Python formula stage: 73 min on an equation-dense paper, forced to CPU upstream) and the full portability research: [docs/perf-and-portability.md](./docs/perf-and-portability.md).
 
 ## License
 

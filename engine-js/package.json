@@ -1,0 +1,41 @@
+{
+  "name": "@pdf2md/engine",
+  "version": "0.1.0",
+  "description": "Local, private PDF -> clean Markdown. Portable engine: granite-docling-258M ONNX via transformers.js (pure JS, no Python).",
+  "type": "module",
+  "license": "UNLICENSED",
+  "bin": {
+    "pdf2md-js": "./dist/cli.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "convert": "tsx src/cli.ts convert",
+    "cli": "tsx src/cli.ts",
+    "test": "vitest run",
+    "test:offline": "vitest run test/doctags.test.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@huggingface/transformers": "^4.0.0",
+    "@napi-rs/canvas": "^0.1.65",
+    "pdfjs-dist": "^5.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0",
+    "vitest": "^3.0.0"
+  }
+}
