@@ -48,6 +48,68 @@ pdfjs.GlobalWorkerOptions.workerSrc =
   "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.worker.min.mjs";
 // Fetch model weights from the HF hub (cached in the renderer after first run).
 (transformers as any).env.allowLocalModels = false;
+// Single-threaded ORT — WebGPU compute needs no wasm threads, and threading is
+// what drags in the node worker_threads path.
+try {
+  (transformers as any).env.backends.onnx.wasm.numThreads = 1;
+} catch {
+  /* ignore */
+}
+
+/**
+ * onnxruntime-web's threaded wasm has its own emscripten Node check that, in this
+ * renderer, wrongly takes the Node path and does `import('worker_threads')` — which
+ * can't resolve. Run `fn` with the environment looking like a plain renderer
+ * (process.type === "renderer", no process.versions.node), then restore. Scoped to
+ * the conversion so nothing else sees the altered globals.
+ */
+async function withRendererEnv<T>(fn: () => Promise<T>): Promise<T> {
+  const proc = typeof process !== "undefined" ? (process as any) : null;
+  const restores: Array<() => void> = [];
+  if (proc) {
+    if (proc.type !== "renderer") {
+      const orig = proc.type;
+      try {
+        proc.type = "renderer";
+      } catch {
+        try {
+          Object.defineProperty(proc, "type", { value: "renderer", configurable: true });
+        } catch {
+          /* ignore */
+        }
+      }
+      restores.push(() => {
+        try {
+          proc.type = orig;
+        } catch {
+          /* ignore */
+        }
+      });
+    }
+    const versions = proc.versions;
+    if (versions && typeof versions.node === "string") {
+      const origNode = versions.node;
+      const set = (v: string | undefined) => {
+        try {
+          versions.node = v;
+        } catch {
+          try {
+            Object.defineProperty(versions, "node", { value: v, configurable: true, writable: true });
+          } catch {
+            /* ignore */
+          }
+        }
+      };
+      set(undefined);
+      restores.push(() => set(origNode));
+    }
+  }
+  try {
+    return await fn();
+  } finally {
+    for (const r of restores) r();
+  }
+}
 
 interface Settings {
   /** Vault folder for output; empty = alongside the source PDF. */
@@ -103,22 +165,24 @@ export default class PdfToMdPlugin extends Plugin {
     try {
       const data = new Uint8Array(await this.app.vault.readBinary(file));
 
-      const doc = await convertPdfBrowser(
-        { transformers, pdfjs, data },
-        {
-          maxPages: this.settings.maxPages || undefined,
-          sourceLabel: file.path,
-          titleFallback: file.basename,
-          vlm: {
-            progressCallback: (p: any) => {
-              if (p?.status === "progress" && p.file?.includes("decoder")) {
-                notice.setMessage(`Downloading model … ${Math.round(p.progress || 0)}%`);
-              } else if (p?.status === "ready") {
-                notice.setMessage("Running conversion on WebGPU …");
-              }
+      const doc = await withRendererEnv(() =>
+        convertPdfBrowser(
+          { transformers, pdfjs, data },
+          {
+            maxPages: this.settings.maxPages || undefined,
+            sourceLabel: file.path,
+            titleFallback: file.basename,
+            vlm: {
+              progressCallback: (p: any) => {
+                if (p?.status === "progress" && p.file?.includes("decoder")) {
+                  notice.setMessage(`Downloading model … ${Math.round(p.progress || 0)}%`);
+                } else if (p?.status === "ready") {
+                  notice.setMessage("Running conversion on WebGPU …");
+                }
+              },
             },
           },
-        },
+        ),
       );
 
       const parent = file.parent?.path ?? "";
