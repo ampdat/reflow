@@ -30,7 +30,7 @@ import { env, AutoProcessor, AutoModelForVision2Seq, RawImage, TextStreamer }
   from "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.7.5";
 import * as pdfjsLib
   from "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.min.mjs";
-import { parseDocTags, cleanMath } from "./core.js";
+import { parseDocTags, cleanMath, frontmatter } from "./core.js";
 
 pdfjsLib.GlobalWorkerOptions.workerSrc =
   "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.worker.min.mjs";
@@ -110,7 +110,55 @@ async function run() {
   }
 }
 
+// Full-document convert (all pages) for parity comparison against CPU/Python.
+async function runAll() {
+  window.__full = null; window.__fdone = false; window.__fprog = "";
+  try {
+    const bytes = new Uint8Array(await (await fetch("sample.pdf")).arrayBuffer());
+    const pdf = await pdfjsLib.getDocument({ data: bytes }).promise;
+    const N = pdf.numPages;
+    setStatus("full doc: loading model …");
+    const [processor, model] = await load();
+    const cv = document.getElementById("cv");
+    let title = null, figures = 0, totalMs = 0;
+    const parts = [];
+    for (let p = 1; p <= N; p++) {
+      const page = await pdf.getPage(p);
+      const vp = page.getViewport({ scale: 2 });
+      cv.width = vp.width; cv.height = vp.height;
+      const ctx = cv.getContext("2d");
+      ctx.fillStyle = "white"; ctx.fillRect(0, 0, cv.width, cv.height);
+      await page.render({ canvasContext: ctx, viewport: vp }).promise;
+      const img = ctx.getImageData(0, 0, cv.width, cv.height);
+      const image = new RawImage(img.data, cv.width, cv.height, 4).rgb();
+      const messages = [{ role: "user", content: [{ type: "image" }, { type: "text", text: "Convert this page to docling." }] }];
+      const text = processor.apply_chat_template(messages, { add_generation_prompt: true });
+      const inputs = await processor(text, image);
+      const t0 = performance.now();
+      const gen = await model.generate({ ...inputs, max_new_tokens: 4096 });
+      totalMs += performance.now() - t0;
+      const trimmed = gen.slice(null, [inputs.input_ids.dims.at(-1), null]);
+      const raw = processor.batch_decode(trimmed, { skip_special_tokens: false })[0] ?? "";
+      const doctags = raw.replace(/<end_of_utterance>/g, "").replace(/<\|end_of_text\|>/g, "").trim();
+      const parsed = parseDocTags(doctags, figures);
+      if (title === null) title = parsed.title;
+      figures += parsed.figures.length;
+      parts.push(parsed.markdown);
+      window.__fprog = `page ${p}/${N} (${Math.round(totalMs)} ms cum, ${figures} figs)`;
+      setStatus("full doc: " + window.__fprog);
+    }
+    const fm = frontmatter({ title: title || "attention", source: "sample.pdf", pages: N });
+    const markdown = fm + cleanMath(parts.join("\n\n"));
+    window.__full = { title, pages: N, figures, ms: Math.round(totalMs), markdown };
+    setStatus(`full doc DONE: ${N} pages, ${figures} figures, ${Math.round(totalMs)} ms`);
+  } catch (e) {
+    window.__full = { error: String(e && e.stack || e) };
+    setStatus("full doc ERROR: " + (e && e.message || e));
+  } finally { window.__fdone = true; }
+}
+
 document.getElementById("go").addEventListener("click", run);
 window.run = run;
+window.runAll = runAll;
 setStatus("ready — click Convert page (or window.run())");
 </script>

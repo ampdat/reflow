@@ -19,3 +19,6 @@ target/
 *.safetensors
 
 .DS_Store
+
+# comparison / validation scratch
+out_compare/

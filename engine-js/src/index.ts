@@ -51,6 +51,7 @@ export async function convertPdf(
   let title: string | null = null;
   let inferenceMs = 0;
   let droppedSpans = false;
+  const pageWarnings: string[] = [];
 
   const lastPage = opts.maxPages ? Math.min(pdf.pageCount, opts.maxPages) : pdf.pageCount;
 
@@ -59,8 +60,12 @@ export async function convertPdf(
       const page = await pdf.renderPage(p);
 
       const tInfer = Date.now();
-      const docTags = await vlm.pageToDocTags(page.rgba, page.width, page.height);
+      const { docTags, truncated } = await vlm.pageToDocTags(page.rgba, page.width, page.height);
       inferenceMs += Date.now() - tInfer;
+
+      if (truncated) {
+        pageWarnings.push(`page ${p}: generation stopped early (${truncated}) — output may be incomplete`);
+      }
 
       const parsed = parseDocTags(docTags, allFigures.length);
       if (title === null) title = parsed.title;
@@ -103,7 +108,7 @@ export async function convertPdf(
   const markdown = fm + body;
   await writeFile(join(outDir, "document.md"), markdown, "utf-8");
 
-  const warnings = warnImageOnly(markdown.length, lastPage, ocr);
+  const warnings = [...pageWarnings, ...warnImageOnly(markdown.length, lastPage, ocr)];
   if (droppedSpans) {
     warnings.push("table contained merged cells rendered blank — verify against source");
   }
