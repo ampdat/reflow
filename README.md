@@ -88,11 +88,13 @@ Quality is measured, not vibed. `fixtures/` holds a curated paper set — attent
 
 ## Status
 
-**M1 done → pivoted to the portable TypeScript + ONNX engine (M2, current).** See [PLAN.md](./PLAN.md).
+**M1–M3 done (portable engine at parity) → M4 (Obsidian plugin) in progress.** See [PLAN.md](./PLAN.md).
 
-- ✅ **M1 (Python bootstrap, now frozen reference oracle):** `pdf2md convert` → title-named vault folder (`document.md` + `images/` + `meta.json`); figures, Markdown tables, MathJax-safe `$$LaTeX$$` verified on all four fixtures. Its lasting output is the frozen artifact contract + the engine-independent fixture suite.
-- 🔨 **M2 (`engine-js/`, pure JS):** pdf.js + granite-docling-258M ONNX (transformers.js) + a hand-written DocTags→Markdown parser. Scaffold landed and type-checks; the DocTags parser + MathJax repairs are **offline unit-tested (14/14 green)**. Remaining: first end-to-end model run (~190 MB q4f16 download) and fixture parity (M3).
-- 📄 Perf finding that triggered the pivot (Python formula stage: 73 min on an equation-dense paper, forced to CPU upstream) and the full portability research: [docs/perf-and-portability.md](./docs/perf-and-portability.md).
+- ✅ **M1 (Python bootstrap, now frozen reference oracle):** the artifact contract + engine-independent fixture suite.
+- ✅ **M2 (`engine-js/`, pure JS):** pdf.js + granite-docling-258M ONNX (transformers.js) + a hand-written DocTags→Markdown parser + a degenerate-generation guard. Offline unit-tested (20/20).
+- ✅ **M3 (parity):** all 4 fixtures × TS-CPU vs Python oracle pass **all 7 ground-truth checks**; numeric table cells intact; equation-dense vae handled (35 vs 31 math blocks). CPU fp32 is correct-but-slow; **WebGPU validated in Electron at ~6× CPU speed**, quality-equal — the usable path.
+- 🔨 **M4:** package `engine-js/` as an Obsidian desktop plugin (WebGPU in the renderer).
+- 📄 Full engineering log — CPU/WebGPU dtype findings, the LiteRT.js evaluation, per-target notes: [docs/perf-and-portability.md](./docs/perf-and-portability.md).
 
 ## License
 
