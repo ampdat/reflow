@@ -25,6 +25,20 @@ import * as pdfjs from "pdfjs-dist";
 
 import { convertPdfBrowser, sanitizeDirname } from "../engine-js/src/browser/engine.js";
 
+// The esbuild banner renamed process.release.name so transformers.js (loaded
+// above) would select its onnxruntime-web + WebGPU backend instead of the
+// cpu-only node backend in Obsidian's Node-integrated renderer. IS_NODE_ENV is
+// captured once at that point, so restore the real value now for everything else.
+try {
+  const g = globalThis as any;
+  if (g.__pdf2md_origRelease) {
+    (process as any).release = g.__pdf2md_origRelease;
+    delete g.__pdf2md_origRelease;
+  }
+} catch {
+  /* ignore */
+}
+
 // pdf.js needs a worker; use the CDN module worker (first run only, then cached).
 pdfjs.GlobalWorkerOptions.workerSrc =
   "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.worker.min.mjs";

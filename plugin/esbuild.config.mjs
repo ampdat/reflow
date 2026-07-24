@@ -4,6 +4,13 @@ import esbuild from "esbuild";
 
 const watch = process.argv.includes("--watch");
 
+// Obsidian's renderer has Node integration, so transformers.js sees
+// process.release.name === "node" and picks its cpu-only onnxruntime-node
+// backend — no WebGPU. This banner runs before any bundled module evaluates and
+// temporarily makes that check fail, so transformers captures IS_NODE_ENV=false
+// and offers the onnxruntime-web + WebGPU backend. main.ts restores it right after.
+const forceWebBackend = `(function(){try{if(typeof process!=="undefined"&&process.release&&process.release.name==="node"){globalThis.__pdf2md_origRelease=process.release;process.release=Object.assign({},process.release,{name:"obsidian"});}}catch(e){}})();`;
+
 const ctx = await esbuild.context({
   entryPoints: ["main.ts"],
   bundle: true,
@@ -12,6 +19,7 @@ const ctx = await esbuild.context({
   platform: "browser",
   outfile: "main.js",
   external: ["obsidian", "electron", "@electron/remote", "@codemirror/*", "@lezer/*"],
+  banner: { js: forceWebBackend },
   sourcemap: watch ? "inline" : false,
   minify: !watch,
   logLevel: "info",
