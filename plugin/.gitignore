@@ -1,4 +1,5 @@
 node_modules/
+dist/
 main.js
 main.js.map
 data.json

@@ -9,18 +9,29 @@ nothing uploads. Output is a vault package: `<Title>/document.md` + `images/`.
 This is the M4 shell over the fixture-validated engine (see [../PLAN.md](../PLAN.md)).
 `main.ts` is only Obsidian wiring; the whole conversion pipeline is `engine-js`.
 
-## Build
+## Build & install
 
 ```bash
 cd plugin
-npm install
-npm run build        # bundles main.ts (+ engine core, transformers.js, pdf.js) → main.js
+npm install                 # once
+npm run deploy              # build → dist/, then install into the vault
 ```
 
-Then symlink/copy `manifest.json` + `main.js` into a vault's
-`.obsidian/plugins/pdf-to-md/` and enable it in Settings → Community plugins.
-For live development: `npm run dev` (esbuild watch) with the plugin folder inside
-a test vault.
+- `npm run build` — bundle `main.ts` (+ engine core, transformers.js, pdf.js) → `dist/{main.js,manifest.json}`.
+- `npm run install:vault` — copy `dist/` into the vault's `.obsidian/plugins/pdf-to-md/` **without rebuilding**.
+- `npm run deploy` — both.
+- `npm run dev` — esbuild watch (for live iteration).
+
+Target vault resolution (for `install:vault` / `deploy`): `$OBSIDIAN_VAULT`, else
+the first CLI arg, else the default in `install.mjs`. Examples:
+
+```bash
+OBSIDIAN_VAULT="/path/to/Vault" npm run deploy
+npm run install:vault -- "/path/to/Vault"
+```
+
+After installing, in Obsidian: enable the plugin (Settings → Community plugins),
+or if it's already enabled, **reload** (Cmd+R) / toggle it off·on to pick up the new build.
 
 ## First run
 

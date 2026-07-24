@@ -7,6 +7,8 @@
   "scripts": {
     "build": "node esbuild.config.mjs",
     "dev": "node esbuild.config.mjs --watch",
+    "install:vault": "node install.mjs",
+    "deploy": "node esbuild.config.mjs && node install.mjs",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
