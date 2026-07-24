@@ -176,14 +176,24 @@ the vault. No API keys, no server, nothing uploads.
       DocTags parser convert a page **in Electron 42 / Chrome 148** (= the Obsidian desktop renderer)
       at ~41 s/page, ~6× the CPU fp32 speed, quality-equal. Config: transformers.js **pinned 3.7.5**
       (4.2.0 garbles), dtype `{embed fp16, vision fp32, decoder fp32}`, `device: "webgpu"`.
-- [ ] Wrap the `engine-js` core as an Obsidian **desktop** plugin — pure JS (transformers.js + pdf.js
-      + the DocTags parser); use WebGPU in the renderer (validated), feature-detect `navigator.gpu`.
-      No sidecar, no Python. Refactor: unify `vlm.ts` so node/browser share one path (inject the
-      transformers import); persist weights via IndexedDB/OPFS (the demo pane's Cache API errored).
-- [ ] Model download on first enable with disclosure + checksums (Smart Connections precedent —
-      policies ban remote code, not model data). Inference in a worker; pages sequential to bound memory.
+- [x] **Portable engine refactor** (commit `783dff5`): `core/{types,convert,guard}.ts` hold the
+      platform-agnostic pipeline (`assembleDocument`, no I/O); `browser/{pdf,vlm,engine}.ts` are
+      renderer adapters with transformers.js + pdf.js **injected** (host picks the WebGPU-working
+      version). `index.ts` is now a thin Node adapter. The web harness runs the *real* core
+      (`engine.js`, 17 kB) — no duplication. tsc clean, 20/20 tests, node smoke ✓.
+- [x] **Obsidian plugin scaffold** (commit `604a373`, `plugin/`): file-menu "Convert to Markdown" +
+      command → `convertPdfBrowser()` on WebGPU → vault package; settings (output folder, max pages);
+      esbuild → CJS `main.js`. Bundles clean (engine import resolves). `npm install && npm run build`
+      to produce `main.js`; needs a WebGPU Obsidian + first-run model download.
+- [ ] **Live in-Obsidian validation** (user's box): the post-refactor WebGPU re-run in the in-app
+      pane wedged on fp32 shader-compile (+ the pane's broken Cache API re-downloads ~1 GB each load).
+      The pre-refactor run already proved the config at 41 s/page; confirm in a real vault where
+      IndexedDB/OPFS caching works.
+- [ ] Model download on first enable with disclosure + checksums (Smart Connections precedent).
+      Inference in a worker; persist weights via IndexedDB/OPFS (Cache API unreliable in the harness pane).
 - [ ] Vault craft: YAML frontmatter (title/authors/DOI/citekey), relative image links, optional
       provenance links to PDF pages (`[[paper.pdf#page=N]]`).
+- [ ] Fix engine gaps the plugin inherits: figure over-detection, OTSL merged-cell spans (M3 carry-over).
 
 **Gate 4:** fresh Obsidian install → plugin → converted paper in vault in under 2 minutes, offline
 after model cache.
@@ -252,3 +262,4 @@ comes. Nothing before that gates on mobile.
 | 2026-07-23 | M2 | Gate 2 ✅ | First end-to-end convert working (attention p1). Fixed 4 integration bugs (white canvas fill, processor arg order, device-aware dtype, cwd). Measured CPU dtype: fp32 only correct option (q4f16/q8 garble), ~4 min/page. |
 | 2026-07-23 | M4-probe | — | **WebGPU validated in Electron 42** (the Obsidian renderer env): ~41 s/page, ~6× CPU, quality-equal. Config from IBM's Space: transformers.js 3.7.5 + fp32 decoder (q4f16 garbles on WebGPU too). Docs corrected (perf §4b, models.md). |
 | 2026-07-24 | M3 | **Gate 3 ✅** | **Fixture parity achieved.** All 4 fixtures × both engines pass all 7 ground-truth checks; numeric cells intact; vae math 35 vs 31. Degenerate-generation guard added (`3ead976`), fired in production on vae p11. Gaps for later: figure over-detection, OTSL merged cells. → M4. |
+| 2026-07-24 | M4 | — | Portable engine refactor (`783dff5`): `core/` (assembleDocument, no I/O) + `browser/` adapters (DI transformers/pdf.js); web harness runs the real core. Obsidian plugin scaffolded (`604a373`, `plugin/`) — file-menu convert → vault package on WebGPU; bundles clean. Remaining Gate 4: live in-Obsidian validation + IndexedDB weight cache. |
