@@ -185,10 +185,30 @@ the vault. No API keys, no server, nothing uploads.
       command → `convertPdfBrowser()` on WebGPU → vault package; settings (output folder, max pages);
       esbuild → CJS `main.js`. Bundles clean (engine import resolves). `npm install && npm run build`
       to produce `main.js`; needs a WebGPU Obsidian + first-run model download.
-- [ ] **Live in-Obsidian validation** (user's box): the post-refactor WebGPU re-run in the in-app
-      pane wedged on fp32 shader-compile (+ the pane's broken Cache API re-downloads ~1 GB each load).
-      The pre-refactor run already proved the config at 41 s/page; confirm in a real vault where
-      IndexedDB/OPFS caching works.
+- [~] **Live in-Obsidian validation — IN PROGRESS, blocked on ORT-in-Electron.** Installed into a real
+      vault (`plugin/install.mjs` → `.obsidian/plugins/pdf-to-md/`). Debugging log, each layer cleared:
+    1. ✅ **Backend selection.** Obsidian's Node-integrated renderer made transformers.js pick its
+       cpu-only onnxruntime-node backend (`Unsupported device: "webgpu"`). Fixed by an esbuild banner
+       that renames `process.release.name` off `"node"` so transformers captures `IS_NODE_ENV=false`
+       and offers onnxruntime-web + WebGPU (commits `c583fab`). Console confirms `spoof result:
+       obsidian | navigator.gpu: true`.
+    2. ✅ Model **downloads** and the **WebGPU backend is selected**.
+    3. ❌ **BLOCKER: onnxruntime-web threaded wasm.** `ort-wasm-simd-threaded.jsep.mjs` has its *own*
+       emscripten Node check — `var isNode = typeof globalThis.process?.versions?.node == 'string'`
+       (no `process.type !== "renderer"` guard) — true in the renderer, so it runs
+       `await import('worker_threads')`, an ESM bare specifier that can't resolve →
+       *"no available backend found. ERR: [webgpu] Failed to resolve module specifier 'worker_threads'"*.
+       Runtime spoofing failed (Electron locks `process.versions.node`). A build-time esbuild `onLoad`
+       patch of the glue (commit WIP) **did not fire** — the glue enters the bundle via a path the
+       `/ort-wasm.*\.mjs$/` filter missed; need to find how esbuild includes it (metafile).
+    - **Candidate fixes (next session):** (a) find the real resolve path and patch the glue at build
+      time (or `patch-package` on `node_modules`); (b) force a **non-threaded** ORT wasm so the
+      `-threaded.jsep` glue is never loaded; (c) **run inference in a Web Worker** — no Node `process`
+      there, so emscripten naturally takes the web path (cleanest, but WebGPU-in-worker needs checking);
+      (d) provide `worker_threads` via a bundled stub exporting the real `globalThis.Worker`.
+    - Note: the same engine already passes all 4 fixtures on CPU (M3) and ran correctly on WebGPU in
+      the standalone harness (Electron 42) — the blocker is ORT's Node-detection *inside Obsidian*, not
+      the conversion logic.
 - [ ] Model download on first enable with disclosure + checksums (Smart Connections precedent).
       Inference in a worker; persist weights via IndexedDB/OPFS (Cache API unreliable in the harness pane).
 - [ ] Vault craft: YAML frontmatter (title/authors/DOI/citekey), relative image links, optional
@@ -263,3 +283,4 @@ comes. Nothing before that gates on mobile.
 | 2026-07-23 | M4-probe | — | **WebGPU validated in Electron 42** (the Obsidian renderer env): ~41 s/page, ~6× CPU, quality-equal. Config from IBM's Space: transformers.js 3.7.5 + fp32 decoder (q4f16 garbles on WebGPU too). Docs corrected (perf §4b, models.md). |
 | 2026-07-24 | M3 | **Gate 3 ✅** | **Fixture parity achieved.** All 4 fixtures × both engines pass all 7 ground-truth checks; numeric cells intact; vae math 35 vs 31. Degenerate-generation guard added (`3ead976`), fired in production on vae p11. Gaps for later: figure over-detection, OTSL merged cells. → M4. |
 | 2026-07-24 | M4 | — | Portable engine refactor (`783dff5`): `core/` (assembleDocument, no I/O) + `browser/` adapters (DI transformers/pdf.js); web harness runs the real core. Obsidian plugin scaffolded (`604a373`, `plugin/`) — file-menu convert → vault package on WebGPU; bundles clean. Remaining Gate 4: live in-Obsidian validation + IndexedDB weight cache. |
+| 2026-07-24 | M4 | — | Plugin install workflow (`ab55dd2`: dist/ + install.mjs). Live-in-Obsidian debugging: fixed transformers backend selection (WebGPU now chosen, `c583fab`); **blocked** on onnxruntime-web threaded-wasm doing `import('worker_threads')` in the renderer (emscripten Node mis-detection). Build-time glue patch attempted, didn't fire — WIP. Diagnosis + candidate fixes logged in M4. |

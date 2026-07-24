@@ -2,9 +2,42 @@
 // CJS dist/main.js for Obsidian, and stage manifest.json alongside it so `dist/`
 // is a drop-in plugin folder. `obsidian` and `electron` are provided by the host.
 import esbuild from "esbuild";
-import { copyFileSync, mkdirSync } from "node:fs";
+import { copyFileSync, mkdirSync, readFileSync } from "node:fs";
 
 const watch = process.argv.includes("--watch");
+
+// onnxruntime-web's threaded jsep wasm glue detects Node via
+// `typeof globalThis.process?.versions?.node == 'string'` (no renderer guard) and
+// then does `import('worker_threads')` / `import("module")`, which can't resolve as
+// ESM bare specifiers in Obsidian's renderer. Patch that vendored file at bundle
+// time: force the node checks false and neutralize the node-only dynamic imports so
+// emscripten uses the web path (Web Worker / no threads). Runtime spoofing can't do
+// this — Electron locks process.versions.node.
+const patchOrtNodeDetection = {
+  name: "patch-ort-node-detection",
+  setup(build) {
+    build.onLoad({ filter: /ort-wasm.*\.mjs$/ }, (args) => {
+      let contents = readFileSync(args.path, "utf8");
+      const subs = [
+        ["typeof globalThis.process?.versions?.node == 'string'", "false"],
+        ['"string"==typeof process.versions.node&&"renderer"!=process.type', "false"],
+        ["await import('worker_threads')", "await Promise.resolve({workerData:undefined,Worker:globalThis.Worker})"],
+        ['await import("worker_threads")', 'await Promise.resolve({workerData:undefined,Worker:globalThis.Worker})'],
+        ['await import("module")', 'await Promise.resolve({createRequire:function(){return function(){return {Worker:globalThis.Worker}}}})'],
+        ['require("worker_threads")', "({Worker:globalThis.Worker})"],
+      ];
+      let hits = 0;
+      for (const [from, to] of subs) {
+        if (contents.includes(from)) {
+          contents = contents.split(from).join(to);
+          hits++;
+        }
+      }
+      console.log(`  [patch-ort] ${args.path.split("/").pop()}: ${hits}/${subs.length} patterns patched`);
+      return { contents, loader: "js" };
+    });
+  },
+};
 
 // Obsidian's renderer has Node integration, so transformers.js sees
 // process.release.name === "node" and picks its cpu-only onnxruntime-node
@@ -26,6 +59,7 @@ const ctx = await esbuild.context({
   outfile: "dist/main.js",
   external: ["obsidian", "electron", "@electron/remote", "@codemirror/*", "@lezer/*"],
   banner: { js: forceWebBackend },
+  plugins: [patchOrtNodeDetection],
   sourcemap: watch ? "inline" : false,
   minify: !watch,
   logLevel: "info",

@@ -40,7 +40,25 @@ or if it's already enabled, **reload** (Cmd+R) / toggle it off·on to pick up th
   a progress notice, then caches them in the renderer. Later converts skip the download.
 - pdf.js worker + ORT wasm are fetched from a CDN on first use.
 
-## Status / known gaps (tracked in ../PLAN.md, M4)
+## Status: WebGPU works, blocked on ORT-in-Electron (WIP)
+
+Installed and loading in a real vault. Cleared so far: transformers.js now selects the
+onnxruntime-web + WebGPU backend (an esbuild banner renames `process.release.name` off
+`"node"`, so it stops picking the cpu-only node backend — console logs
+`backend spoof result: obsidian | navigator.gpu: true`), the model downloads, and the
+WebGPU backend is chosen.
+
+**Current blocker:** onnxruntime-web's *threaded* wasm glue
+(`ort-wasm-simd-threaded.jsep.mjs`) has its own emscripten Node check
+(`typeof globalThis.process?.versions?.node == 'string'`, no renderer guard) that is true
+in Obsidian's renderer, so it runs `import('worker_threads')` — an ESM bare specifier that
+can't resolve → *"no available backend found … Failed to resolve module specifier
+'worker_threads'"*. Runtime spoofing can't fix it (Electron locks `process.versions.node`);
+the in-progress esbuild `onLoad` patch of that glue didn't fire (wrong resolve path).
+Candidate fixes are logged in [../PLAN.md](../PLAN.md) M4 (patch the glue at build time /
+force non-threaded ORT / run inference in a Web Worker where there's no Node `process`).
+
+## Other known gaps (tracked in ../PLAN.md, M4)
 
 - Weights use the fp32 WebGPU dtype validated in the harness (q4f16 garbles today);
   a smaller quantized build is an open M3/M4 item.
