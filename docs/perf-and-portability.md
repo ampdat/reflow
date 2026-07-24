@@ -228,9 +228,29 @@ Notes:
   `q8`→`_quantized` — and it is both wrong and slower here (matches the SmolDocling quantized-ONNX
   gibberish reports, §3).
 - **Implication:** the Node/CPU CLI is correct at fp32 but ~4 min/page — fine as the M3 parity
-  harness (run the fixture suite in the background), **not** interactive. Usable speed comes from
-  **WebGPU** (q4f16, where it works), i.e. the Electron/Obsidian (M4) and browser (M6) targets, not
-  CPU quantization. Re-test int8/q8 only if a future export or ORT-node WebGPU EP changes the math.
+  harness (run the fixture suite in the background), **not** interactive.
+
+### WebGPU — validated (same day, `engine-js/web/` harness)
+
+Ran the identical pipeline (pdf.js + transformers.js + **our** JS DocTags parser) in the in-app
+browser pane — **Electron 42 / Chrome 148, `shader-f16: true`**, i.e. the exact Obsidian-desktop
+renderer environment. `attention.pdf` page 1:
+
+| transformers.js | decoder dtype | vision dtype | Result | s/page |
+|---|---|---|---|---|
+| 4.2.0 | q4f16 | fp16 → fp32 | **Garbage** — 4096× "!" (constant token) | 67–76 |
+| **3.7.5** | **fp32** | **fp32** (embed fp16) | **Correct** — clean DocTags, title extracted, 28.4/41.8 BLEU, "Łukasz" intact | **~41** |
+
+- **Two fixes, both from IBM's own WebGPU Space config:** pin transformers.js **3.7.5** (4.2.0 emits
+  all-"!" on this model — a 4.x regression), and use an **fp32 decoder**, *not* q4f16. So the earlier
+  "q4f16 ≈190 MB" default was wrong on both providers: q4f16 garbles on CPU *and* WebGPU here. The
+  known-good WebGPU config is `{embed_tokens: fp16, vision_encoder: fp32, decoder_model_merged: fp32}`
+  (~1 GB), the same dtypes IBM ships.
+- **WebGPU is ~6× the CPU fp32 speed** (41 s vs 251 s/page) and quality-equal — the real usable-speed
+  path, confirmed in the M4 (Obsidian/Electron) target environment. Revisit q4/q4f16 as a size win in
+  M3, gated on the fixture tests (they fail today).
+- Caveat: the browser's Cache API errored on the ~1 GB weights in this pane (no persistence → re-download
+  each load); a real plugin uses IndexedDB/OPFS (IBM's Space does) and caches fine.
 
 ---
 

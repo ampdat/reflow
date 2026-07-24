@@ -8,9 +8,12 @@ Working rule: every model download is documented here (name, size, cache path). 
 
 | Model (HF repo) | Role | Variant sizes | Cache path | When |
 |-----------------|------|---------------|------------|------|
-| `onnx-community/granite-docling-258M-ONNX` (Apache-2.0) | full page → DocTags (layout + reading order + tables + LaTeX + OCR) | fp32 ≈1.03 GB · fp16 ≈515 MB · int8 ≈260 MB · **q4f16 ≈190 MB** (default decoder) | transformers.js cache (`~/.cache/huggingface/` in Node; IndexedDB/OPFS in browser) | on first convert |
+| `onnx-community/granite-docling-258M-ONNX` (Apache-2.0) | full page → DocTags (layout + reading order + tables + LaTeX + OCR) | per-subgraph variants: decoder `fp32/fp16/q4/q4f16/quantized`; vision & embed also `int8/uint8` | transformers.js cache (`~/.cache/huggingface/` in Node; IndexedDB/OPFS in browser) | on first convert |
 
-Precision policy (see [perf-and-portability.md §3](./perf-and-portability.md)): q8/fp16 decoder floor, fp16 vision tower; q4f16 is the size sweet spot but its TEDS/formula quality is **unmeasured** — the shared fixture suite is the arbiter before it becomes the default. Total warm cache for the portable path: **~0.2 GB** (q4f16) vs ~1.1 GB for the bootstrap stack below.
+**Measured precision policy (perf doc §4b, 2026-07-23)** — the quant sweep is done, and the earlier "q4f16 ≈190 MB default" was wrong on both providers:
+- **CPU (onnxruntime-node):** fp32 is the only correct dtype; q4f16 and q8 both garble. Warm cache ~1.0 GB (fp32). ~4 min/page.
+- **WebGPU (Electron/browser):** validated config is `{embed_tokens: fp16, vision_encoder: fp32, decoder_model_merged: fp32}` (~1 GB), **with transformers.js pinned to 3.7.5** (4.2.0 emits all-"!" garbage on this model). ~41 s/page — ~6× CPU, quality-equal.
+- q4/q4f16 (the ~190 MB size win) fail today on both; revisit in M3, gated on the fixture tests.
 
 ## Bootstrap / reference-oracle engine (Python Docling)
 

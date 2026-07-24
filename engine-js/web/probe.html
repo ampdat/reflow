@@ -1,0 +1,20 @@
+<!doctype html><meta charset=utf8><title>WebGPU probe</title>
+<body style="font:16px system-ui;padding:2rem">
+<h1>WebGPU probe</h1><pre id=out>checking…</pre>
+<script type=module>
+const out = document.getElementById('out');
+const lines = [];
+lines.push('navigator.gpu present: ' + !!navigator.gpu);
+try {
+  if (navigator.gpu) {
+    const adapter = await navigator.gpu.requestAdapter();
+    lines.push('requestAdapter: ' + (adapter ? 'OK' : 'null'));
+    if (adapter) {
+      lines.push('adapter features: ' + [...adapter.features].slice(0,6).join(', '));
+      lines.push('fp16 supported: ' + adapter.features.has('shader-f16'));
+    }
+  }
+} catch(e) { lines.push('error: ' + e.message); }
+out.textContent = lines.join('\n');
+window.__probe = lines.join(' | ');
+</script>

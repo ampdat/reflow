@@ -169,9 +169,14 @@ modular path is the fallback.
 **Goal:** the empty-quadrant product: right-click a PDF in Obsidian → note + figures + math land in
 the vault. No API keys, no server, nothing uploads.
 
+- [x] **WebGPU path validated** (`engine-js/web/`, perf doc §4b): pdf.js + transformers.js + our JS
+      DocTags parser convert a page **in Electron 42 / Chrome 148** (= the Obsidian desktop renderer)
+      at ~41 s/page, ~6× the CPU fp32 speed, quality-equal. Config: transformers.js **pinned 3.7.5**
+      (4.2.0 garbles), dtype `{embed fp16, vision fp32, decoder fp32}`, `device: "webgpu"`.
 - [ ] Wrap the `engine-js` core as an Obsidian **desktop** plugin — pure JS (transformers.js + pdf.js
-      + the DocTags parser); prefer the transformers.js Node path (onnxruntime-node) inside Electron,
-      feature-detect `navigator.gpu` for WebGPU. No sidecar, no Python.
+      + the DocTags parser); use WebGPU in the renderer (validated), feature-detect `navigator.gpu`.
+      No sidecar, no Python. Refactor: unify `vlm.ts` so node/browser share one path (inject the
+      transformers import); persist weights via IndexedDB/OPFS (the demo pane's Cache API errored).
 - [ ] Model download on first enable with disclosure + checksums (Smart Connections precedent —
       policies ban remote code, not model data). Inference in a worker; pages sequential to bound memory.
 - [ ] Vault craft: YAML frontmatter (title/authors/DOI/citekey), relative image links, optional
