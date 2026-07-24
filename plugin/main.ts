@@ -1,0 +1,194 @@
+/**
+ * PDF → Markdown Obsidian plugin (desktop).
+ *
+ * Right-click a PDF in the vault (or run the command) → the engine-js core runs
+ * granite-docling on WebGPU in the renderer → a Markdown package (document.md +
+ * images/) lands in the vault. No server, no API keys, nothing uploads.
+ *
+ * The whole conversion pipeline is the shared, fixture-validated core
+ * (../engine-js/src/browser/engine.ts); this file is just the Obsidian shell:
+ * menu/command wiring, vault I/O, and injecting transformers.js + pdf.js.
+ */
+
+import {
+  Menu,
+  Notice,
+  Plugin,
+  PluginSettingTab,
+  Setting,
+  TAbstractFile,
+  TFile,
+  normalizePath,
+} from "obsidian";
+import * as transformers from "@huggingface/transformers";
+import * as pdfjs from "pdfjs-dist";
+
+import { convertPdfBrowser, sanitizeDirname } from "../engine-js/src/browser/engine.js";
+
+// pdf.js needs a worker; use the CDN module worker (first run only, then cached).
+pdfjs.GlobalWorkerOptions.workerSrc =
+  "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.worker.min.mjs";
+// Fetch model weights from the HF hub (cached in the renderer after first run).
+(transformers as any).env.allowLocalModels = false;
+
+interface Settings {
+  /** Vault folder for output; empty = alongside the source PDF. */
+  outputFolder: string;
+  /** 0 = all pages. */
+  maxPages: number;
+}
+
+const DEFAULT_SETTINGS: Settings = { outputFolder: "", maxPages: 0 };
+
+export default class PdfToMdPlugin extends Plugin {
+  settings: Settings = DEFAULT_SETTINGS;
+
+  async onload(): Promise<void> {
+    await this.loadSettings();
+
+    this.registerEvent(
+      this.app.workspace.on("file-menu", (menu: Menu, file: TAbstractFile) => {
+        if (file instanceof TFile && file.extension === "pdf") {
+          menu.addItem((item) =>
+            item
+              .setTitle("Convert to Markdown")
+              .setIcon("file-text")
+              .onClick(() => this.convert(file)),
+          );
+        }
+      }),
+    );
+
+    this.addCommand({
+      id: "convert-active-pdf",
+      name: "Convert active PDF to Markdown",
+      checkCallback: (checking: boolean) => {
+        const f = this.app.workspace.getActiveFile();
+        const ok = !!f && f.extension === "pdf";
+        if (ok && !checking) this.convert(f as TFile);
+        return ok;
+      },
+    });
+
+    this.addSettingTab(new PdfToMdSettingTab(this));
+  }
+
+  async convert(file: TFile): Promise<void> {
+    const notice = new Notice(`Converting ${file.name} …`, 0);
+    try {
+      const data = new Uint8Array(await this.app.vault.readBinary(file));
+
+      const doc = await convertPdfBrowser(
+        { transformers, pdfjs, data },
+        {
+          maxPages: this.settings.maxPages || undefined,
+          sourceLabel: file.path,
+          titleFallback: file.basename,
+          vlm: {
+            progressCallback: (p: any) => {
+              if (p?.status === "progress" && p.file?.includes("decoder")) {
+                notice.setMessage(`Downloading model … ${Math.round(p.progress || 0)}%`);
+              } else if (p?.status === "ready") {
+                notice.setMessage("Running conversion on WebGPU …");
+              }
+            },
+          },
+        },
+      );
+
+      const parent = file.parent?.path ?? "";
+      const base = this.settings.outputFolder.trim() || parent;
+      const folder = normalizePath(`${base}/${sanitizeDirname(doc.title) || file.basename}`);
+      await this.ensureFolder(folder);
+      await this.ensureFolder(`${folder}/images`);
+
+      for (const fig of doc.figures) {
+        if (!fig.png) continue;
+        const ab = fig.png.buffer.slice(
+          fig.png.byteOffset,
+          fig.png.byteOffset + fig.png.byteLength,
+        );
+        await this.writeBinary(`${folder}/images/${fig.id}.png`, ab as ArrayBuffer);
+      }
+      await this.writeText(`${folder}/document.md`, doc.markdown);
+
+      notice.hide();
+      const warn = doc.warnings.length
+        ? ` — ${doc.warnings.length} warning(s), see console`
+        : "";
+      if (doc.warnings.length) console.warn("[pdf-to-md]", doc.warnings);
+      new Notice(`Converted → ${folder}/document.md${warn}`, 6000);
+
+      const md = this.app.vault.getAbstractFileByPath(`${folder}/document.md`);
+      if (md instanceof TFile) await this.app.workspace.getLeaf(true).openFile(md);
+    } catch (e: any) {
+      notice.hide();
+      console.error("[pdf-to-md]", e);
+      new Notice(`Conversion failed: ${e?.message ?? e}`, 8000);
+    }
+  }
+
+  private async ensureFolder(path: string): Promise<void> {
+    if (!this.app.vault.getAbstractFileByPath(path)) {
+      try {
+        await this.app.vault.createFolder(path);
+      } catch {
+        /* concurrent create / already exists */
+      }
+    }
+  }
+
+  private async writeText(path: string, data: string): Promise<void> {
+    const existing = this.app.vault.getAbstractFileByPath(path);
+    if (existing instanceof TFile) await this.app.vault.modify(existing, data);
+    else await this.app.vault.create(path, data);
+  }
+
+  private async writeBinary(path: string, data: ArrayBuffer): Promise<void> {
+    const existing = this.app.vault.getAbstractFileByPath(path);
+    if (existing instanceof TFile) await this.app.vault.modifyBinary(existing, data);
+    else await this.app.vault.createBinary(path, data);
+  }
+
+  async loadSettings(): Promise<void> {
+    this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+  }
+
+  async saveSettings(): Promise<void> {
+    await this.saveData(this.settings);
+  }
+}
+
+class PdfToMdSettingTab extends PluginSettingTab {
+  constructor(private plugin: PdfToMdPlugin) {
+    super(plugin.app, plugin);
+  }
+
+  display(): void {
+    const { containerEl } = this;
+    containerEl.empty();
+
+    new Setting(containerEl)
+      .setName("Output folder")
+      .setDesc("Vault folder for converted packages. Empty = alongside the PDF.")
+      .addText((t) =>
+        t
+          .setPlaceholder("e.g. Papers")
+          .setValue(this.plugin.settings.outputFolder)
+          .onChange(async (v) => {
+            this.plugin.settings.outputFolder = v;
+            await this.plugin.saveSettings();
+          }),
+      );
+
+    new Setting(containerEl)
+      .setName("Max pages")
+      .setDesc("0 = all pages. Set a small number for quick tests.")
+      .addText((t) =>
+        t.setValue(String(this.plugin.settings.maxPages)).onChange(async (v) => {
+          this.plugin.settings.maxPages = parseInt(v, 10) || 0;
+          await this.plugin.saveSettings();
+        }),
+      );
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "id": "pdf-to-md",
+  "name": "PDF to Markdown (local)",
+  "version": "0.1.0",
+  "minAppVersion": "1.5.0",
+  "description": "Convert a PDF to clean Markdown locally with granite-docling on WebGPU. Figures, tables and math survive. Nothing uploads.",
+  "author": "pdf-to-md",
+  "isDesktopOnly": true
+}
