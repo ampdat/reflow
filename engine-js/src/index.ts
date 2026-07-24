@@ -1,22 +1,21 @@
 /**
- * pdf2md portable engine (TypeScript + ONNX).
+ * pdf2md portable engine (TypeScript + ONNX) — Node entry.
  *
  * Public API: convertPdf(pdfPath, outParent, opts) -> Meta.
  * Produces the frozen artifact contract — out/<Title>/document.md + images/ +
  * meta.json — identical to the Python bootstrap, labelled engine "onnx-portable".
  *
- * Pipeline: pdf.js rasterizes each page -> granite-docling ONNX emits DocTags ->
- * the JS DocTags parser -> MathJax repairs -> vault package. One page in flight
- * at a time to bound memory (same shape a mobile target will need).
+ * The conversion pipeline itself lives in core/convert.ts (platform-agnostic);
+ * this file is the Node adapter: pdf.js via @napi-rs/canvas, onnxruntime-node
+ * VLM, and filesystem writes. The Obsidian/browser build reuses the same core.
  */
 
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { basename, extname, join, resolve } from "node:path";
 
-import { parseDocTags, type FigureRef } from "./doctags.js";
-import { frontmatter, sanitizeDirname } from "./frontmatter.js";
-import { cleanMath } from "./mathjax.js";
-import { ENGINE_ID, warnImageOnly, type Meta } from "./meta.js";
+import { assembleDocument } from "./core/convert.js";
+import { sanitizeDirname } from "./frontmatter.js";
+import { ENGINE_ID, type Meta } from "./meta.js";
 import { loadPdf } from "./pdf.js";
 import { loadVlm, type VlmOptions } from "./vlm.js";
 
@@ -43,102 +42,59 @@ export async function convertPdf(
   const bytes = await readFile(pdfPath);
   const pdf = await loadPdf(new Uint8Array(bytes));
   const loadMs = Date.now() - t0;
-
   const vlm = await loadVlm(opts.vlm);
 
-  const bodyParts: string[] = [];
-  const allFigures: Array<FigureRef & { page: number; png: Buffer | null }> = [];
-  let title: string | null = null;
-  let inferenceMs = 0;
-  let droppedSpans = false;
-  const pageWarnings: string[] = [];
-
-  const lastPage = opts.maxPages ? Math.min(pdf.pageCount, opts.maxPages) : pdf.pageCount;
-
+  const fallback = basename(pdfPath, extname(pdfPath));
+  let doc;
   try {
-    for (let p = 1; p <= lastPage; p++) {
-      const page = await pdf.renderPage(p);
-
-      const tInfer = Date.now();
-      const { docTags, truncated } = await vlm.pageToDocTags(page.rgba, page.width, page.height);
-      inferenceMs += Date.now() - tInfer;
-
-      if (truncated) {
-        pageWarnings.push(`page ${p}: generation stopped early (${truncated}) — output may be incomplete`);
-      }
-
-      const parsed = parseDocTags(docTags, allFigures.length);
-      if (title === null) title = parsed.title;
-      droppedSpans = droppedSpans || parsed.droppedSpans;
-
-      for (const fig of parsed.figures) {
-        const png = fig.bbox ? page.crop(fig.bbox) : null;
-        allFigures.push({ ...fig, page: p, png });
-      }
-      bodyParts.push(parsed.markdown);
-    }
+    doc = await assembleDocument(pdf, vlm, {
+      maxPages: opts.maxPages,
+      sourceLabel: resolve(pdfPath),
+      titleFallback: fallback,
+      ocr,
+    });
   } finally {
     vlm.dispose();
     await pdf.destroy();
   }
 
-  const tAssemble = Date.now();
-
-  const finalTitle = (title && title.trim()) || basename(pdfPath, extname(pdfPath));
-  const outDir = join(outParent, sanitizeDirname(finalTitle) || basename(pdfPath, extname(pdfPath)));
+  const outDir = join(outParent, sanitizeDirname(doc.title) || fallback);
   const imagesDir = join(outDir, "images");
   await mkdir(imagesDir, { recursive: true });
 
   let imageCount = 0;
-  for (const fig of allFigures) {
+  for (const fig of doc.figures) {
     if (!fig.png) continue;
     await writeFile(join(imagesDir, `${fig.id}.png`), fig.png);
     imageCount++;
   }
 
-  const body = cleanMath(bodyParts.join("\n\n"));
-  const fm = frontmatter({
-    title: finalTitle,
-    source: resolve(pdfPath),
-    pages: pdf.pageCount,
-    author: pdf.meta.author,
-    published: pdf.meta.published,
-    description: pdf.meta.description,
-  });
-  const markdown = fm + body;
-  await writeFile(join(outDir, "document.md"), markdown, "utf-8");
+  await writeFile(join(outDir, "document.md"), doc.markdown, "utf-8");
 
-  const warnings = [...pageWarnings, ...warnImageOnly(markdown.length, lastPage, ocr)];
-  if (droppedSpans) {
-    warnings.push("table contained merged cells rendered blank — verify against source");
-  }
-  if (lastPage < pdf.pageCount) {
-    warnings.push(`processed only ${lastPage} of ${pdf.pageCount} pages (--max-pages)`);
-  }
-
-  const assembleMs = Date.now() - tAssemble;
   const meta: Meta = {
     source: pdfPath,
-    title: finalTitle,
+    title: doc.title,
     out_dir: outDir,
     engine: ENGINE_ID,
     engine_version: VERSION,
-    model: vlm.modelLabel,
+    model: doc.model,
     options: { formulas, ocr },
-    pages: pdf.pageCount,
+    pages: doc.pageCount,
     images: imageCount,
-    markdown_chars: markdown.length,
-    timings_ms: { load: loadMs, inference: inferenceMs, assemble: assembleMs },
+    markdown_chars: doc.markdown.length,
+    timings_ms: { load: loadMs, inference: doc.timings.inference, assemble: doc.timings.assemble },
     wall_ms: Date.now() - t0,
-    execution_providers: vlm.executionProviders,
-    warnings,
+    execution_providers: doc.executionProviders,
+    warnings: doc.warnings,
   };
   await writeFile(join(outDir, "meta.json"), JSON.stringify(meta, null, 2), "utf-8");
 
-  for (const w of warnings) process.stderr.write(`WARNING: ${w}\n`);
+  for (const w of doc.warnings) process.stderr.write(`WARNING: ${w}\n`);
   return meta;
 }
 
+export { assembleDocument } from "./core/convert.js";
 export { parseDocTags } from "./doctags.js";
 export { cleanMath, fixFormula } from "./mathjax.js";
 export type { Meta } from "./meta.js";
+export type { AssembledDocument, PageSource, Vlm } from "./core/types.js";

@@ -12,34 +12,10 @@
  */
 
 import { createCanvas, type Canvas } from "@napi-rs/canvas";
-import type { BBox } from "./doctags.js";
+import type { BBox, PageSource, RenderedPage, TextToken } from "./core/types.js";
 
 /** Render scale; ~2x mirrors the bootstrap's images_scale=2.0. */
 const RENDER_SCALE = 2.0;
-
-export interface TextToken {
-  str: string;
-  /** Page-fraction bbox (0..1), origin top-left. */
-  bbox: BBox;
-}
-
-export interface RenderedPage {
-  index: number; // 1-based
-  width: number;
-  height: number;
-  /** RGBA pixels, row-major, 4 channels — ready for transformers.js RawImage. */
-  rgba: Uint8ClampedArray;
-  /** Crop a normalized bbox out of the page raster as a PNG buffer (figure export). */
-  crop(bbox: BBox): Buffer;
-  textTokens: TextToken[];
-}
-
-export interface LoadedPdf {
-  pageCount: number;
-  meta: { author?: string; published?: string; description?: string };
-  renderPage(index: number): Promise<RenderedPage>;
-  destroy(): Promise<void>;
-}
 
 /** pdf.js needs a canvas factory in Node; wire it to @napi-rs/canvas. */
 class NodeCanvasFactory {
@@ -69,7 +45,7 @@ async function loadPdfjs(): Promise<any> {
   return await import("pdfjs-dist/legacy/build/pdf.mjs");
 }
 
-export async function loadPdf(data: Uint8Array): Promise<LoadedPdf> {
+export async function loadPdf(data: Uint8Array): Promise<PageSource> {
   const pdfjs = await loadPdfjs();
   const canvasFactory = new NodeCanvasFactory();
 
@@ -133,7 +109,7 @@ export async function loadPdf(data: Uint8Array): Promise<LoadedPdf> {
         height,
         rgba,
         textTokens,
-        crop(bbox: BBox): Buffer {
+        async crop(bbox: BBox): Promise<Uint8Array> {
           const cx = Math.max(0, Math.floor(bbox.l * width));
           const cy = Math.max(0, Math.floor(bbox.t * height));
           const cw = Math.min(width - cx, Math.ceil((bbox.r - bbox.l) * width));

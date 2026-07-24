@@ -3,162 +3,89 @@
 <title>pdf2md — WebGPU engine demo</title>
 <style>
   body { font: 15px/1.5 system-ui, sans-serif; margin: 0; padding: 1.5rem; max-width: 1100px; }
-  h1 { font-size: 1.2rem; }
+  h1 { font-size: 1.15rem; }
   #status { padding: .5rem .75rem; background: #f4f4f5; border-radius: 6px; white-space: pre-wrap; }
-  .row { display: flex; gap: 1rem; align-items: flex-start; }
+  .row { display: flex; gap: 1rem; margin-top: 1rem; align-items: flex-start; }
   .col { flex: 1; min-width: 0; }
-  canvas { max-width: 340px; border: 1px solid #ddd; }
-  pre { background: #f8f8f8; border: 1px solid #eee; padding: .5rem; overflow: auto; max-height: 60vh; white-space: pre-wrap; word-break: break-word; }
+  pre { background: #f8f8f8; border: 1px solid #eee; padding: .5rem; overflow: auto; max-height: 65vh; white-space: pre-wrap; word-break: break-word; }
   button { font: inherit; padding: .4rem .9rem; }
+  img { max-width: 220px; display: block; margin: 4px 0; border: 1px solid #ddd; }
 </style>
 <body>
-<h1>pdf2md — granite-docling-258M on WebGPU (q4f16)</h1>
+<h1>pdf2md — granite-docling-258M on WebGPU (real engine-js core)</h1>
 <p>
-  <button id="go">Convert page</button>
-  page <input id="pg" type="number" value="1" min="1" style="width:4rem">
+  <button id="go">Convert page 1</button>
+  <button id="goall">Convert full doc</button>
   of <code>sample.pdf</code>
 </p>
-<div id="status">idle</div>
-<div class="row" style="margin-top:1rem">
-  <div><canvas id="cv"></canvas></div>
-  <div class="col"><h3>DocTags (raw)</h3><pre id="doctags"></pre></div>
+<div id="status">loading…</div>
+<div class="row">
   <div class="col"><h3>Markdown</h3><pre id="md"></pre></div>
+  <div class="col"><h3>Figures</h3><div id="figs"></div></div>
 </div>
 
 <script type="module">
-import { env, AutoProcessor, AutoModelForVision2Seq, RawImage, TextStreamer }
-  from "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.7.5";
-import * as pdfjsLib
-  from "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.min.mjs";
-import { parseDocTags, cleanMath, frontmatter } from "./core.js";
+// Inject the platform libs; the engine core (engine.js) is version-agnostic.
+import * as transformers from "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.7.5";
+import * as pdfjs from "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.min.mjs";
+import { convertPdfBrowser } from "./engine.js";
 
-pdfjsLib.GlobalWorkerOptions.workerSrc =
+pdfjs.GlobalWorkerOptions.workerSrc =
   "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.worker.min.mjs";
-env.allowLocalModels = false;
+transformers.env.allowLocalModels = false;
 
-const MODEL = "onnx-community/granite-docling-258M-ONNX";
 const statusEl = document.getElementById("status");
 const setStatus = (s) => { statusEl.textContent = s; window.__status = s; };
 
-let modelP, procP;
-function load() {
-  if (!procP) {
-    procP = AutoProcessor.from_pretrained(MODEL);
-    modelP = AutoModelForVision2Seq.from_pretrained(MODEL, {
-      // IBM's known-good WebGPU config (their demo): fp32 decoder + fp32 vision,
-      // fp16 embed. q4f16 decoder produced all-"!" garbage here.
-      dtype: { embed_tokens: "fp16", vision_encoder: "fp32", decoder_model_merged: "fp32" },
-      device: "webgpu",
-      progress_callback: (p) => {
-        if (p.status === "progress" && p.file?.includes("decoder"))
-          setStatus(`downloading ${p.file} … ${Math.round(p.progress || 0)}%`);
-      },
-    });
-  }
-  return Promise.all([procP, modelP]);
-}
-
-async function renderPage(n) {
-  const bytes = new Uint8Array(await (await fetch("sample.pdf")).arrayBuffer());
-  const pdf = await pdfjsLib.getDocument({ data: bytes }).promise;
-  const page = await pdf.getPage(n);
-  const viewport = page.getViewport({ scale: 2 });
-  const cv = document.getElementById("cv");
-  cv.width = viewport.width; cv.height = viewport.height;
-  const ctx = cv.getContext("2d");
-  ctx.fillStyle = "white"; ctx.fillRect(0, 0, cv.width, cv.height);
-  await page.render({ canvasContext: ctx, viewport }).promise;
-  return ctx.getImageData(0, 0, cv.width, cv.height);
-}
-
-async function run() {
-  window.__result = null; window.__done = false;
+async function convert(maxPages) {
+  window.__done = false; window.__result = null;
   try {
-    const n = parseInt(document.getElementById("pg").value, 10) || 1;
-    setStatus("rendering page …");
-    const img = await renderPage(n);
-    setStatus("loading model (first run downloads ~190 MB) …");
-    const [processor, model] = await load();
-    const image = new RawImage(img.data, img.width, img.height, 4).rgb();
-    const messages = [{ role: "user", content: [{ type: "image" }, { type: "text", text: "Convert this page to docling." }] }];
-    const text = processor.apply_chat_template(messages, { add_generation_prompt: true });
-    const inputs = await processor(text, image);
-    setStatus("running inference on WebGPU …");
-    window.__stream = "";
-    const streamer = new TextStreamer(processor.tokenizer, {
-      skip_prompt: true,
-      skip_special_tokens: false,
-      callback_function: (s) => { window.__stream += s; },
-    });
+    setStatus("loading model + converting (first run downloads ~1 GB) …");
+    const data = new Uint8Array(await (await fetch("sample.pdf")).arrayBuffer());
     const t0 = performance.now();
-    const generated = await model.generate({ ...inputs, max_new_tokens: 4096, streamer });
+    const doc = await convertPdfBrowser(
+      { transformers, pdfjs, data },
+      {
+        maxPages,
+        sourceLabel: "sample.pdf",
+        titleFallback: "sample",
+        vlm: {
+          progressCallback: (p) => {
+            if (p.status === "progress" && p.file?.includes("decoder"))
+              setStatus(`downloading ${p.file} … ${Math.round(p.progress || 0)}%`);
+          },
+        },
+      },
+    );
     const ms = Math.round(performance.now() - t0);
-    const trimmed = generated.slice(null, [inputs.input_ids.dims.at(-1), null]);
-    const raw = processor.batch_decode(trimmed, { skip_special_tokens: false })[0] ?? "";
-    const doctags = raw.replace(/<end_of_utterance>/g, "").replace(/<\|end_of_text\|>/g, "").trim();
-    const parsed = parseDocTags(doctags);
-    const md = cleanMath(parsed.markdown);
-    document.getElementById("doctags").textContent = doctags;
-    document.getElementById("md").textContent = md;
-    window.__result = { ms, doctagsLen: doctags.length, title: parsed.title, mdChars: md.length, doctagsHead: doctags.slice(0, 900) };
-    setStatus(`done in ${ms} ms — DocTags ${doctags.length} chars, title: ${parsed.title ?? "(none)"}`);
+    document.getElementById("md").textContent = doc.markdown;
+
+    const figs = document.getElementById("figs");
+    figs.innerHTML = "";
+    let shown = 0;
+    for (const f of doc.figures) {
+      if (!f.png) continue;
+      shown++;
+      const img = new Image();
+      img.src = URL.createObjectURL(new Blob([f.png], { type: "image/png" }));
+      figs.appendChild(img);
+    }
+    window.__result = {
+      title: doc.title, pages: doc.pageCount, processed: doc.pagesProcessed,
+      figures: doc.figures.length, mdChars: doc.markdown.length,
+      warnings: doc.warnings, ms,
+    };
+    setStatus(`done: "${doc.title}" — ${doc.pagesProcessed}/${doc.pageCount} pp, ${shown} figs, ${doc.markdown.length} chars, ${ms} ms. warnings: ${doc.warnings.length ? doc.warnings.join(" | ") : "none"}`);
   } catch (e) {
-    window.__result = { error: String(e && e.stack || e) };
-    setStatus("ERROR: " + (e && e.message || e));
+    window.__result = { error: String(e?.stack || e) };
+    setStatus("ERROR: " + (e?.message || e));
   } finally {
     window.__done = true;
   }
 }
 
-// Full-document convert (all pages) for parity comparison against CPU/Python.
-async function runAll() {
-  window.__full = null; window.__fdone = false; window.__fprog = "";
-  try {
-    const bytes = new Uint8Array(await (await fetch("sample.pdf")).arrayBuffer());
-    const pdf = await pdfjsLib.getDocument({ data: bytes }).promise;
-    const N = pdf.numPages;
-    setStatus("full doc: loading model …");
-    const [processor, model] = await load();
-    const cv = document.getElementById("cv");
-    let title = null, figures = 0, totalMs = 0;
-    const parts = [];
-    for (let p = 1; p <= N; p++) {
-      const page = await pdf.getPage(p);
-      const vp = page.getViewport({ scale: 2 });
-      cv.width = vp.width; cv.height = vp.height;
-      const ctx = cv.getContext("2d");
-      ctx.fillStyle = "white"; ctx.fillRect(0, 0, cv.width, cv.height);
-      await page.render({ canvasContext: ctx, viewport: vp }).promise;
-      const img = ctx.getImageData(0, 0, cv.width, cv.height);
-      const image = new RawImage(img.data, cv.width, cv.height, 4).rgb();
-      const messages = [{ role: "user", content: [{ type: "image" }, { type: "text", text: "Convert this page to docling." }] }];
-      const text = processor.apply_chat_template(messages, { add_generation_prompt: true });
-      const inputs = await processor(text, image);
-      const t0 = performance.now();
-      const gen = await model.generate({ ...inputs, max_new_tokens: 4096 });
-      totalMs += performance.now() - t0;
-      const trimmed = gen.slice(null, [inputs.input_ids.dims.at(-1), null]);
-      const raw = processor.batch_decode(trimmed, { skip_special_tokens: false })[0] ?? "";
-      const doctags = raw.replace(/<end_of_utterance>/g, "").replace(/<\|end_of_text\|>/g, "").trim();
-      const parsed = parseDocTags(doctags, figures);
-      if (title === null) title = parsed.title;
-      figures += parsed.figures.length;
-      parts.push(parsed.markdown);
-      window.__fprog = `page ${p}/${N} (${Math.round(totalMs)} ms cum, ${figures} figs)`;
-      setStatus("full doc: " + window.__fprog);
-    }
-    const fm = frontmatter({ title: title || "attention", source: "sample.pdf", pages: N });
-    const markdown = fm + cleanMath(parts.join("\n\n"));
-    window.__full = { title, pages: N, figures, ms: Math.round(totalMs), markdown };
-    setStatus(`full doc DONE: ${N} pages, ${figures} figures, ${Math.round(totalMs)} ms`);
-  } catch (e) {
-    window.__full = { error: String(e && e.stack || e) };
-    setStatus("full doc ERROR: " + (e && e.message || e));
-  } finally { window.__fdone = true; }
-}
-
-document.getElementById("go").addEventListener("click", run);
-window.run = run;
-window.runAll = runAll;
-setStatus("ready — click Convert page (or window.run())");
+document.getElementById("go").addEventListener("click", () => convert(1));
+document.getElementById("goall").addEventListener("click", () => convert(0));
+window.convert = convert;
+setStatus("ready — Convert page 1 / full doc");
 </script>

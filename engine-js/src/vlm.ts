@@ -15,6 +15,11 @@
 export const DEFAULT_MODEL = "onnx-community/granite-docling-258M-ONNX";
 export const DEFAULT_PROMPT = "Convert this page to docling.";
 
+import { createGuard, hasShortCycle } from "./core/guard.js";
+import type { PageResult, Vlm } from "./core/types.js";
+export type { PageResult, Vlm };
+export { hasShortCycle };
+
 /** Per-subgraph precision. q4f16 decoder is the ~190 MB sweet spot; fp16 vision floor. */
 export type DtypeMap = Record<string, string>;
 
@@ -58,24 +63,6 @@ export interface VlmOptions {
   prompt?: string;
 }
 
-/** Result of one page generation — carries a truncation reason so nothing is silently lost. */
-export interface PageResult {
-  docTags: string;
-  /** null = clean stop (EOS); else why generation was cut: "repetition" | "timeout" | "max_tokens". */
-  truncated: string | null;
-  genTokens: number;
-}
-
-export interface Vlm {
-  /** Run one page raster (RGBA) through the model. */
-  pageToDocTags(rgba: Uint8ClampedArray, width: number, height: number): Promise<PageResult>;
-  /** ONNX execution providers actually in use — recorded into meta.json, never guessed. */
-  executionProviders: string[];
-  /** e.g. "onnx-community/granite-docling-258M-ONNX@q4f16". */
-  modelLabel: string;
-  dispose(): void;
-}
-
 /** Minimal view of the transformers.js surface we depend on. */
 interface Transformers {
   AutoProcessor: { from_pretrained(id: string, opts?: unknown): Promise<any> };
@@ -88,52 +75,6 @@ interface Transformers {
 
 async function loadTransformers(): Promise<Transformers> {
   return (await import("@huggingface/transformers")) as unknown as Transformers;
-}
-
-/**
- * True if the tail of `a` is a short cycle repeated ≥3× — the granite-docling
- * degenerate-repetition signature (constant "!", or a looping phrase). Catches
- * period ≤ maxPeriod; longer/irregular runaways fall to the wall-clock backstop.
- */
-export function hasShortCycle(a: number[], maxPeriod = 16): boolean {
-  const n = a.length;
-  for (let p = 1; p <= maxPeriod; p++) {
-    if (n < p * 3) continue;
-    let ok = true;
-    for (let i = 0; i < p * 2; i++) {
-      if (a[n - 1 - i] !== a[n - 1 - i - p]) { ok = false; break; }
-    }
-    if (ok) return true;
-  }
-  return false;
-}
-
-interface Guard {
-  triggered: string | null;
-}
-
-/** A StoppingCriteria that halts on repetition or a wall-clock timeout. */
-function createGuard(Base: any, timeoutMs: number, maxPeriod = 16): Guard {
-  const start = Date.now();
-  const recent: number[] = [];
-  const guard = new (class extends Base {
-    triggered: string | null = null;
-    _call(input_ids: number[][]): boolean[] {
-      const ids = input_ids[0] ?? [];
-      if (Date.now() - start > timeoutMs) {
-        this.triggered ??= "timeout";
-        return input_ids.map(() => true);
-      }
-      recent.push(ids[ids.length - 1] as number);
-      if (recent.length > maxPeriod * 3 + 4) recent.shift();
-      if (hasShortCycle(recent, maxPeriod)) {
-        this.triggered ??= "repetition";
-        return input_ids.map(() => true);
-      }
-      return input_ids.map(() => false);
-    }
-  })();
-  return guard as Guard;
 }
 
 export async function loadVlm(opts: VlmOptions = {}): Promise<Vlm> {
