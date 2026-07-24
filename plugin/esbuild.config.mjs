@@ -11,7 +11,9 @@ const watch = process.argv.includes("--watch");
 // backend — no WebGPU. This banner runs before any bundled module evaluates and
 // temporarily makes that check fail, so transformers captures IS_NODE_ENV=false
 // and offers the onnxruntime-web + WebGPU backend. main.ts restores it right after.
-const forceWebBackend = `(function(){try{if(typeof process!=="undefined"&&process.release&&process.release.name==="node"){globalThis.__pdf2md_origRelease=process.release;process.release=Object.assign({},process.release,{name:"obsidian"});}}catch(e){}})();`;
+// process.release is often not reassignable in Electron, so mutate `.name`
+// directly, then fall back to defineProperty on the name, then on release.
+const forceWebBackend = `(function(){try{var p=(typeof process!=="undefined")?process:null;if(p&&p.release&&p.release.name==="node"){globalThis.__pdf2md_origRelease=p.release.name;try{p.release.name="obsidian";}catch(e){}if(p.release.name==="node"){try{Object.defineProperty(p.release,"name",{value:"obsidian",configurable:true,writable:true});}catch(e){}}if(p.release.name==="node"){try{Object.defineProperty(p,"release",{value:Object.assign({},p.release,{name:"obsidian"}),configurable:true,writable:true});}catch(e){}}globalThis.__pdf2md_spoofResult=p.release.name;}else{globalThis.__pdf2md_spoofResult=p&&p.release?p.release.name:"no-process";}}catch(e){globalThis.__pdf2md_spoofResult="err:"+(e&&e.message);}})();`;
 
 mkdirSync("dist", { recursive: true });
 

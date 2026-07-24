@@ -31,8 +31,12 @@ import { convertPdfBrowser, sanitizeDirname } from "../engine-js/src/browser/eng
 // captured once at that point, so restore the real value now for everything else.
 try {
   const g = globalThis as any;
-  if (g.__pdf2md_origRelease) {
-    (process as any).release = g.__pdf2md_origRelease;
+  if (g.__pdf2md_origRelease && (process as any).release) {
+    try {
+      (process as any).release.name = g.__pdf2md_origRelease;
+    } catch {
+      /* release.name may be locked; harmless — IS_NODE_ENV is already captured */
+    }
     delete g.__pdf2md_origRelease;
   }
 } catch {
@@ -58,6 +62,13 @@ export default class PdfToMdPlugin extends Plugin {
   settings: Settings = DEFAULT_SETTINGS;
 
   async onload(): Promise<void> {
+    // Diagnostic: did the backend spoof stick, and is WebGPU visible?
+    const g = globalThis as any;
+    console.log(
+      `[pdf-to-md] backend spoof result: ${g.__pdf2md_spoofResult} | ` +
+        `navigator.gpu: ${typeof navigator !== "undefined" && "gpu" in navigator}`,
+    );
+
     await this.loadSettings();
 
     this.registerEvent(
