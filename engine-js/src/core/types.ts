@@ -47,6 +47,13 @@ export interface PageResult {
   /** null = clean stop (EOS); else why it was cut: "repetition" | "timeout" | "max_tokens". */
   truncated: string | null;
   genTokens: number;
+  /**
+   * Length of the prompt fed to the decoder, image tokens included. Worth
+   * recording: granite-docling descends from Idefics3, whose processor can
+   * *split* a large page image into tiles, and every extra image token inflates
+   * the per-step attention cost for the whole generation.
+   */
+  promptTokens: number;
 }
 
 /** The VLM (granite-docling ONNX), either onnxruntime-node or WebGPU. */

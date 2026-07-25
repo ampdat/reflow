@@ -75,7 +75,7 @@ export async function createBrowserVlm(transformers: any, opts: BrowserVlmOption
         .replace(/<\/?doctag>/g, "")
         .trim();
       const truncated = guard.triggered ?? (genTokens >= maxNewTokens ? "max_tokens" : null);
-      return { docTags, truncated, genTokens };
+      return { docTags, truncated, genTokens, promptTokens: promptLen };
     },
     dispose() {
       model?.dispose?.();

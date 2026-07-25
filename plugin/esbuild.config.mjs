@@ -33,11 +33,23 @@ const inlinePatchedOrtGlue = {
     }));
     build.onLoad({ filter: /.*/, namespace: "ort-glue" }, () => {
       const source = readFileSync(ORT_GLUE, "utf8");
+
+      // onnxruntime-web ~1.24-1.26 added the missing guard upstream, so on a
+      // current transformers there is nothing to patch. Detect that rather than
+      // assuming a version: `process?.type != "renderer"` in the epilogue.
+      if (/isPthread\s*=\s*\(await import\(["']worker_threads["']\)\)/.test(source)) {
+        const epilogue = source.slice(source.lastIndexOf("export default"));
+        if (/process\??\.type\s*!=/.test(epilogue)) {
+          console.log("  [ort-glue] upstream glue already guards on process.type — no patch needed");
+          return { contents: source, loader: "text" };
+        }
+      }
+
       if (!source.includes(GLUE_EPILOGUE)) {
-        // Fail loudly rather than shipping a glue we only think we patched:
-        // if ORT changes this line, the plugin would silently break again.
+        // Neither the known-broken epilogue nor the upstream fix: fail loudly
+        // rather than shipping a glue we only think we understand.
         throw new Error(
-          `[ort-glue] node-detection epilogue not found in ${ORT_GLUE}. ` +
+          `[ort-glue] unrecognized node-detection epilogue in ${ORT_GLUE}. ` +
             `onnxruntime-web changed; re-check the patch in plugin/ort-env.ts.`,
         );
       }

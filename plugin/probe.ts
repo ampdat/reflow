@@ -18,6 +18,22 @@ const TINY_ADD_ONNX =
   "CAk6VAoOCgFBCgFCEgFDIgNBZGQSA2FkZFoTCgFBEg4KDAgBEggKAggBCgIIBFoTCgFCEg4KDAgB" +
   "EggKAggBCgIIBGITCgFDEg4KDAgBEggKAggBCgIIBEIECgAQDQ==";
 
+/**
+ * Sidecar URLs resolved by transformers.js for *its* ORT instance.
+ *
+ * The smoke test deliberately uses a second, standalone `onnxruntime-web` so it
+ * can be run without touching the real pipeline — but that instance has no
+ * `wasmPaths` of its own and can't infer one ("cannot determine the script
+ * source URL": there is no usable `import.meta.url` in this CJS bundle). Borrow
+ * the paths transformers already computed so both instances load the same
+ * matching glue + binary.
+ */
+let sharedWasmPaths: unknown = null;
+
+export function setOrtWasmPaths(paths: unknown): void {
+  sharedWasmPaths = paths;
+}
+
 function modelBytes(): Uint8Array {
   const bin = atob(TINY_ADD_ONNX);
   const out = new Uint8Array(bin.length);
@@ -71,7 +87,11 @@ export async function ortSmoke(
           (ort as any).env.wasm.numThreads = 1;
           return { wasmPaths: (ort as any).env.wasm.wasmPaths, baseline: true };
         })()
-      : configureOrt((ort as any).env);
+      : (() => {
+          const cfg = configureOrt((ort as any).env);
+          if (sharedWasmPaths) (ort as any).env.wasm.wasmPaths = sharedWasmPaths;
+          return { ...cfg, wasmPaths: (ort as any).env.wasm.wasmPaths };
+        })();
 
   try {
     const session = await ort.InferenceSession.create(modelBytes(), {
@@ -142,7 +162,7 @@ export async function benchPage(
     const rendered = await pages.renderPage(page);
     const tRender = performance.now();
 
-    const { docTags, truncated, genTokens } = await vlm.pageToDocTags(
+    const { docTags, truncated, genTokens, promptTokens } = await vlm.pageToDocTags(
       rendered.rgba,
       rendered.width,
       rendered.height,
@@ -160,6 +180,9 @@ export async function benchPage(
       renderSec: +((tRender - tModel) / 1000).toFixed(2),
       genSec: +genSec.toFixed(2),
       genTokens,
+      /** Prompt length incl. image tokens — the per-step attention cost driver. */
+      promptTokens,
+      renderedPx: `${rendered.width}x${rendered.height}`,
       tokensPerSec: +(genTokens / genSec).toFixed(2),
       /** null = hit EOS cleanly; else "max_tokens" | "repetition" | "timeout". */
       truncated,

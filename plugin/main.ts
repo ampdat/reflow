@@ -25,7 +25,7 @@ import * as pdfjs from "pdfjs-dist";
 
 import { convertPdfBrowser, sanitizeDirname } from "../engine-js/src/browser/engine.js";
 import { configureOrt } from "./ort-env.js";
-import { benchPage, installProbe } from "./probe.js";
+import { benchPage, installProbe, setOrtWasmPaths } from "./probe.js";
 
 // The esbuild banner renamed process.release.name so transformers.js (loaded
 // above) would select its onnxruntime-web + WebGPU backend instead of the
@@ -50,10 +50,12 @@ pdfjs.GlobalWorkerOptions.workerSrc =
   "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.worker.min.mjs";
 // Fetch model weights from the HF hub (cached in the renderer after first run).
 (transformers as any).env.allowLocalModels = false;
-// Replace the jsdelivr `wasmPaths` prefix transformers.js installs at import time
-// with our patched emscripten glue — without this, onnxruntime-web can't start in
-// Obsidian's renderer at all. See plugin/ort-env.ts for the full explanation.
+// Configure onnxruntime-web for Obsidian's renderer. On onnxruntime-web ≥ ~1.24
+// this is just thread/proxy settings; on older builds it also swaps in a patched
+// emscripten glue, without which ORT can't start here at all. See plugin/ort-env.ts.
 const ortConfig = configureOrt((transformers as any).env.backends.onnx);
+// Let the standalone-ORT smoke test reuse these resolved sidecar URLs.
+setOrtWasmPaths((transformers as any).env.backends.onnx.wasm.wasmPaths);
 
 interface Settings {
   /** Vault folder for output; empty = alongside the source PDF. */
@@ -78,7 +80,7 @@ export default class PdfToMdPlugin extends Plugin {
     console.log(
       `[pdf-to-md] backend spoof: ${g.__pdf2md_spoofResult} | ` +
         `navigator.gpu: ${typeof navigator !== "undefined" && "gpu" in navigator} | ` +
-        `ort glue patched: ${ortConfig.gluePatched} (${ortConfig.glueBytes} B)`,
+        `ort glue: ${ortConfig.strategy} (${ortConfig.glueBytes} B)`,
     );
 
     // Debug shim (see plugin/probe.ts) — `window.__pdf2md` in the console, or

@@ -134,7 +134,7 @@ export async function loadVlm(opts: VlmOptions = {}): Promise<Vlm> {
         process.stderr.write(`\n=== RAW DOCTAGS (${raw.length} chars) ===\n${raw}\n=== END ===\n`);
       }
       const truncated = guard.triggered ?? (genTokens >= maxNewTokens ? "max_tokens" : null);
-      return { docTags: stripChrome(raw), truncated, genTokens };
+      return { docTags: stripChrome(raw), truncated, genTokens, promptTokens: promptLen };
     },
     dispose() {
       model?.dispose?.();

@@ -37,10 +37,15 @@
 // @ts-ignore — virtual module, see plugin/virtual.d.ts
 import PATCHED_ORT_GLUE from "virtual:ort-glue";
 
-/** Version of @huggingface/transformers whose dist the .wasm is fetched from. */
-const TRANSFORMERS_VERSION = "3.7.5";
-
-const WASM_FILE = "ort-wasm-simd-threaded.jsep.wasm";
+/**
+ * Whether the bundled glue already carries the upstream fix (onnxruntime-web
+ * ~1.24-1.26 added `process?.type != "renderer"` to the epilogue). When it does,
+ * the whole override below is unnecessary and we leave transformers.js's own
+ * `wasmPaths` alone — fewer moving parts, and its sidecar caching keeps working.
+ */
+const GLUE_IS_FIXED_UPSTREAM = /process\??\.type\s*!=/.test(
+  (PATCHED_ORT_GLUE as string).slice((PATCHED_ORT_GLUE as string).lastIndexOf("export default")),
+);
 
 let glueUrl: string | null = null;
 
@@ -55,32 +60,38 @@ function patchedGlueUrl(): string {
 }
 
 export interface OrtEnvReport {
-  wasmPaths: { mjs: string; wasm: string };
+  /** How the glue is being supplied: upstream-fixed, or our patched blob. */
+  strategy: "upstream" | "patched-glue";
+  wasmPaths: unknown;
   numThreads: number;
   glueBytes: number;
-  gluePatched: boolean;
 }
 
 /**
  * Apply the working configuration to an onnxruntime-web `env` object (either
  * ORT's own, or `transformers.env.backends.onnx`, which is the same shape).
+ *
+ * `wasmUrl` overrides where the .wasm is fetched from; only meaningful on the
+ * patched-glue path, where a blob URL has no base to resolve siblings against.
  */
 export function configureOrt(ortEnv: any, opts: { wasmUrl?: string } = {}): OrtEnvReport {
-  const wasm = opts.wasmUrl ??
-    `https://cdn.jsdelivr.net/npm/@huggingface/transformers@${TRANSFORMERS_VERSION}/dist/${WASM_FILE}`;
-  const mjs = patchedGlueUrl();
-
-  ortEnv.wasm.wasmPaths = { mjs, wasm };
   // WebGPU compute needs no wasm threads, and single-threaded keeps ORT from
   // preloading the glue as a worker script.
   ortEnv.wasm.numThreads = 1;
   ortEnv.wasm.proxy = false;
 
+  if (!GLUE_IS_FIXED_UPSTREAM) {
+    const mjs = patchedGlueUrl();
+    const wasm =
+      opts.wasmUrl ??
+      `https://cdn.jsdelivr.net/npm/onnxruntime-web@${ortEnv.versions?.web ?? "1.22.0"}/dist/ort-wasm-simd-threaded.jsep.wasm`;
+    ortEnv.wasm.wasmPaths = { mjs, wasm };
+  }
+
   return {
-    wasmPaths: { mjs, wasm },
+    strategy: GLUE_IS_FIXED_UPSTREAM ? "upstream" : "patched-glue",
+    wasmPaths: ortEnv.wasm.wasmPaths,
     numThreads: ortEnv.wasm.numThreads,
     glueBytes: (PATCHED_ORT_GLUE as string).length,
-    // The build fails unless exactly one renderer-guarded reference remains.
-    gluePatched: !(PATCHED_ORT_GLUE as string).includes("await import('worker_threads')"),
   };
 }
