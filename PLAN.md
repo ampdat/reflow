@@ -245,11 +245,26 @@ the vault. No API keys, no server, nothing uploads.
 
     - **So no dtype rescues it**: best is ~1.3 tok/s, and a 258M decoder on an M-series GPU should be
       ~10-30x that. The gap is still unexplained.
-    - **Next diagnostics, in order:** (1) run the standalone `engine-js/web` harness on *this* machine —
-      if it is also ~1 tok/s then Obsidian is not the variable and the M4-probe "41 s/page" figure is
-      not reproducible; (2) enable ORT verbose logging to get the actual per-node EP assignment behind
-      the `VerifyEachNodeIsAssignedToAnEp` warning; (3) check whether Obsidian's Electron launch flags
-      constrain WebGPU.
+- [!] **DECISION POINT: native CPU beats WebGPU by ~10x, and it runs *inside* Obsidian.** Two controls
+      on the same machine, same page, same core:
+    - **Node CLI (onnxruntime-node, CPU, ~381% CPU):** page 1 complete, **EOS reached cleanly**, 2937
+      chars of markdown, **126 s total** (incl. model load + render).
+    - **Obsidian WebGPU:** 515 chars after 120 s and still generating; ~2.4 tok/s steady state.
+    - i.e. CPU produced ~5.7x more output in the same wall-clock *and finished*. This **inverts** the
+      M4-probe entry below ("WebGPU validated … ~6x CPU, ~41 s/page"); that figure does not reproduce.
+    - **`onnxruntime-node` loads and runs in Obsidian's renderer.** Verified live: `require()` of the
+      package from the renderer returns a working module and runs the 94-byte Add model in **31 ms**
+      (vs ~800-1500 ms on WebGPU). N-API (napi-v6) is ABI-stable across Node and Electron, and
+      Obsidian's renderer has Node integration — so the native backend is available to the plugin.
+    - **This makes the whole WebGPU apparatus optional**: no `process.release.name` banner spoof, no
+      glue patch, no CDN wasm — and ~10x the throughput.
+    - **Open cost:** onnxruntime-node ships **platform-specific native binaries** (darwin-arm64/x64,
+      win32-x64, linux-x64; tens of MB each). Obsidian community plugins are normally pure JS, so this
+      affects distribution and catalog acceptability. Build change needed too: bundle transformers'
+      *node* entry and mark `onnxruntime-node` external so it resolves at runtime.
+    - **Remaining WebGPU diagnostics** (only worth doing if we stay on WebGPU): per-node EP assignment
+      via ORT verbose logging (behind the `VerifyEachNodeIsAssignedToAnEp` warning), and whether
+      Obsidian's Electron launch flags constrain WebGPU.
 - [ ] Adopt from `cavi-ai/claude-obsidian` (reviewed 2026-07-24, transformers 4.2.0 + ORT 1.26):
       **`env.useWasmCache = true`** (4.x) caches the ORT sidecar binaries in the Cache API → fully offline
       after first run, dropping our runtime jsdelivr dependency for the 4 MB wasm; and their
