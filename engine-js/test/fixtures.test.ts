@@ -50,6 +50,6 @@ describe.skipIf(!RUN)("portable engine fixture parity", () => {
       for (const f of failed) console.log(`  FAIL ${f.name}: ${f.detail}`);
 
       expect(failed.map((f) => `${f.name}: ${f.detail}`)).toEqual([]);
-    }, 900_000);
+    }, 2_400_000);
   }
 });

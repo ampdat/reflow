@@ -317,6 +317,25 @@ without the per-platform binaries. Keep it in the back pocket if a machine ever 
       patch unnecessary (verified: guard absent in 1.22/1.23, present in 1.26). Major bump touching
       `AutoProcessor`/`AutoModelForVision2Seq`/`generate`/`StoppingCriteria`; gate it on re-running the
       4-fixture parity suite that validated M3 on 3.7.5.
+- [x] **Gate 3 reconfirmed on the current stack (transformers 4.2.0 / ORT 1.26), CPU: 4/4 fixtures pass
+      8/8 checks.** `attention`, `bert`, `vae`, `ioannidis` all clean. (The vitest run *reported* 3
+      failures — those were its 900 s per-test timeout firing while conversion was still running, not
+      check failures; every fixture printed 8/8 once it finished. Per-test timeout needs raising.)
+    - Pages that tripped the degenerate-generation guard and were still good enough to pass:
+      attention p4/p6/p9 and bert p16 (repetition), vae p2 and ioannidis p6 (timeout). Merged-cell
+      table warnings on attention, bert, ioannidis — the known OTSL gap.
+- [!] **Memory is the binding constraint, not CPU.** Machine-requirements data from the CPU run:
+    - **Peak RSS during a single 15-page conversion: ~9.3 GB** (sampled with `ps` while running).
+      Settled RSS *after* the same conversion: ~2.5 GB — so peak, not steady state, is what sizes the box.
+    - **RSS accumulates across conversions in one process:** 2528 → 5156 → 7313 MB over successive
+      fixtures, despite `convertPdf` calling `vlm.dispose()` + `pdf.destroy()`. ORT's native
+      allocations are not fully returned. **This matters for the plugin**: a user converting several
+      PDFs in one Obsidian session would watch the renderer grow until it dies. Needs a fix (dispose
+      audit, or convert in a disposable worker) before shipping.
+    - On this 16 GB M4 the second run drove swap to 7.5 GB and load to 18.5, and a conversion that
+      took 439 s on a healthy machine took >35 min. Thrashing, not compute.
+    - **Still to measure:** the same peak/accumulation figures on the WebGPU path (renderer + GPU
+      process RSS), and whether peak scales with page count or plateaus.
 - [ ] Model download on first enable with disclosure + checksums (Smart Connections precedent).
       Inference in a worker; persist weights via IndexedDB/OPFS (Cache API unreliable in the harness pane).
 - [ ] Vault craft: YAML frontmatter (title/authors/DOI/citekey), relative image links, optional
