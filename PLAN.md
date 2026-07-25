@@ -215,6 +215,32 @@ the vault. No API keys, no server, nothing uploads.
       With `window.__pdf2md` (`plugin/probe.ts`: `envReport` / `ortSmoke` / `convertPath`) the whole
       build → install → reload → run → read-result loop is scripted. **This is the debugging capability
       the previous session lacked** — every finding above was produced without touching the UI.
+- [x] **RESOLVED — the throughput scare was measurement error.** Everything in the struck-through block
+      below was measured while an unrelated AI training run was saturating the machine (CPU + GPU
+      contention and thermal throttling). Re-measured on 2026-07-25 with the machine settled (load < 2,
+      Apple M4, 4P+6E), identical methodology on both sides (`engine-js/tools/bench.ts` and
+      `__pdf2md.benchPage`, both token-capped at 128 so neither can be cut short by a wall-clock guard):
+
+      | backend | page 1 | page 2 | model load |
+      |---------|--------|--------|------------|
+      | Node CPU (onnxruntime-node, fp32) | 13.80 tok/s | 14.93 tok/s | 2.9 s |
+      | **Obsidian WebGPU (fp32)** | **12.37 tok/s** | **12.57 tok/s** | 0.6-1.1 s |
+
+    - **WebGPU and native CPU are within ~15% of each other.** The earlier "WebGPU is ~10x slower"
+      finding was an artifact: WebGPU measured 1.12 tok/s under contention vs 12.4 tok/s idle — an
+      **11x distortion**. The CPU side was barely affected (the 126 s full page ≈ 1700 tokens at
+      ~14 tok/s), which is exactly why the *comparison* looked so lopsided.
+    - **Consequence: the onnxruntime-node pivot is unnecessary.** No per-platform native binaries, no
+      change to the pure-JS distribution story. The WebGPU path stays.
+    - **Lesson for future benchmarking:** always confirm the machine is idle first, and prefer
+      token-capped runs — a wall-clock-capped run silently reports "truncated page" for what is really
+      "loaded machine", which is what sent this investigation down a blind alley.
+    - Still valid from that work (correctness results, not timing-dependent): **any f16 dtype garbles**
+      to `!!!` on both ORT 1.22 and 1.26, so fp32 stays pinned; q8/q4 are numerically fine. The tok/s
+      figures in that dtype table are contaminated and would need re-measuring to be trusted.
+
+<details><summary>Superseded (contaminated measurements, kept for the audit trail)</summary>
+
 - [~] **OPEN: WebGPU throughput in Obsidian is ~0.72 tok/s — the real remaining blocker.** Measured with
       `__pdf2md.benchPage` (token-capped, so it isolates throughput from the wall-clock guard): 32 tokens
       in 44.3 s on page 1 of `attention.pdf`, model load 4.4 s (cached), render 0.6 s. **Output is
@@ -265,6 +291,12 @@ the vault. No API keys, no server, nothing uploads.
     - **Remaining WebGPU diagnostics** (only worth doing if we stay on WebGPU): per-node EP assignment
       via ORT verbose logging (behind the `VerifyEachNodeIsAssignedToAnEp` warning), and whether
       Obsidian's Electron launch flags constrain WebGPU.
+
+</details>
+
+**Note:** the `onnxruntime-node`-in-the-renderer result above is still *true* (it loads and runs — N-API
+is ABI-stable across Node and Electron), it is just no longer *motivated*: WebGPU performs comparably
+without the per-platform binaries. Keep it in the back pocket if a machine ever lacks WebGPU.
 - [ ] Adopt from `cavi-ai/claude-obsidian` (reviewed 2026-07-24, transformers 4.2.0 + ORT 1.26):
       **`env.useWasmCache = true`** (4.x) caches the ORT sidecar binaries in the Cache API → fully offline
       after first run, dropping our runtime jsdelivr dependency for the 4 MB wasm; and their
