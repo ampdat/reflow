@@ -10,6 +10,7 @@
  * Exposed as `window.__pdf2md` while the plugin is loaded.
  */
 import * as ort from "onnxruntime-web";
+import { loadPdfBrowser, createBrowserVlm } from "../engine-js/src/browser/engine.js";
 import { configureOrt } from "./ort-env.js";
 
 /** C = A + B over a 1x4 float tensor. 94 bytes, opset 13. */
@@ -102,6 +103,73 @@ export async function ortSmoke(
       error: String(e?.message ?? e),
       totalMs: Math.round(performance.now() - t0),
     };
+  }
+}
+
+/**
+ * Time a single page with a **token** cap instead of a wall-clock cap.
+ *
+ * The per-page timeout tells you a page was cut off, but not *why*: a page that
+ * stops early could be slow inference or a model that never emits EOS. Capping
+ * by tokens separates the two — it yields a tokens/sec figure, and the
+ * `truncated` reason says whether the cap or a guard ended it. `head`/`tail` of
+ * the DocTags show at a glance whether the output degenerated.
+ */
+export async function benchPage(
+  deps: { transformers: any; pdfjs: any; data: Uint8Array },
+  {
+    page = 1,
+    maxNewTokens = 256,
+    device = "webgpu",
+    dtype = undefined as Record<string, string> | undefined,
+  } = {},
+) {
+  const t0 = performance.now();
+  const pages = await loadPdfBrowser(deps.pdfjs, deps.data);
+  const tPdf = performance.now();
+
+  const vlm = await createBrowserVlm(deps.transformers, {
+    device,
+    dtype,
+    maxNewTokens,
+    // Effectively disabled — this run is bounded by maxNewTokens, so the
+    // wall-clock guard would only confuse the measurement.
+    perPageTimeoutMs: 3_600_000,
+  });
+  const tModel = performance.now();
+
+  try {
+    const rendered = await pages.renderPage(page);
+    const tRender = performance.now();
+
+    const { docTags, truncated, genTokens } = await vlm.pageToDocTags(
+      rendered.rgba,
+      rendered.width,
+      rendered.height,
+    );
+    const tGen = performance.now();
+    const genSec = (tGen - tRender) / 1000;
+
+    return {
+      page,
+      device,
+      dtype: vlm.modelLabel,
+      maxNewTokens,
+      pdfLoadSec: +((tPdf - t0) / 1000).toFixed(2),
+      modelLoadSec: +((tModel - tPdf) / 1000).toFixed(2),
+      renderSec: +((tRender - tModel) / 1000).toFixed(2),
+      genSec: +genSec.toFixed(2),
+      genTokens,
+      tokensPerSec: +(genTokens / genSec).toFixed(2),
+      /** null = hit EOS cleanly; else "max_tokens" | "repetition" | "timeout". */
+      truncated,
+      docTagsChars: docTags.length,
+      head: docTags.slice(0, 300),
+      tail: docTags.slice(-300),
+    };
+  } finally {
+    vlm.dispose();
+    await pages.destroy();
   }
 }
 

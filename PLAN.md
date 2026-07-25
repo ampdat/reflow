@@ -215,6 +215,37 @@ the vault. No API keys, no server, nothing uploads.
       With `window.__pdf2md` (`plugin/probe.ts`: `envReport` / `ortSmoke` / `convertPath`) the whole
       build → install → reload → run → read-result loop is scripted. **This is the debugging capability
       the previous session lacked** — every finding above was produced without touching the UI.
+- [~] **OPEN: WebGPU throughput in Obsidian is ~0.72 tok/s — the real remaining blocker.** Measured with
+      `__pdf2md.benchPage` (token-capped, so it isolates throughput from the wall-clock guard): 32 tokens
+      in 44.3 s on page 1 of `attention.pdf`, model load 4.4 s (cached), render 0.6 s. **Output is
+      correct** (`<page_header><loc_14>…arXiv:1706.03762v7 [cs`) — so this is *not* the degenerate-
+      generation problem and not a termination bug; the earlier "hangs" were simply a dense page needing
+      thousands of tokens at ~1 tok/s (30–60 min/page).
+    - Contradicts the M4-probe harness measurement of ~41 s/page on Electron 42 by ~2 orders of
+      magnitude. Either the harness figure isn't comparable or something differs in Obsidian's renderer.
+    - **Not a hardware limit:** the adapter is real (`apple`/`metal-3`, not a fallback) and advertises
+      `shader-f16`, `subgroups`, and 4 GB `maxStorageBufferBindingSize`. So the fp32 decoder is a
+      *choice*, not a constraint.
+    - **`fp16` decoder garbles too** (measured 2026-07-24): emits `!!!`, repetition guard fires at 3
+      tokens — the same failure as q4f16. So we are *pinned to fp32*, and fp32 is unusably slow. Half
+      precision being broken on two separate dtypes points at the ORT 1.22 WebGPU kernels rather than
+      the weights, which raises the value of the transformers 4.x / ORT 1.26 upgrade below.
+    - **Remaining suspect:** ORT's `VerifyEachNodeIsAssignedToAnEp` warning on every session — decoder
+      ops falling back to CPU would round-trip GPU↔CPU per token, with wasm pinned to `numThreads = 1`.
+      A `device:"wasm"` control tells us whether WebGPU is buying anything at all.
+- [ ] Adopt from `cavi-ai/claude-obsidian` (reviewed 2026-07-24, transformers 4.2.0 + ORT 1.26):
+      **`env.useWasmCache = true`** (4.x) caches the ORT sidecar binaries in the Cache API → fully offline
+      after first run, dropping our runtime jsdelivr dependency for the 4 MB wasm; and their
+      **probe → warm-up inference → fall back to wasm** loader pattern (we commit to `device:"webgpu"`
+      with no verification or fallback). Their Blob-URL worker is worth copying for UI responsiveness
+      but is *not* a fix for Node-detection: Obsidian runs with `--node-integration-in-worker`, so
+      `process` exists in workers too (they need their `forceWebEnv` shim *inside* the worker) — this
+      retires candidate (c) from the earlier blocker analysis.
+- [ ] **Consider transformers 4.x upgrade.** ORT ≥ ~1.24–1.26 adds the missing renderer guard
+      (`globalThis.process?.type != "renderer"`) upstream, which would make `plugin/ort-env.ts`'s glue
+      patch unnecessary (verified: guard absent in 1.22/1.23, present in 1.26). Major bump touching
+      `AutoProcessor`/`AutoModelForVision2Seq`/`generate`/`StoppingCriteria`; gate it on re-running the
+      4-fixture parity suite that validated M3 on 3.7.5.
 - [ ] Model download on first enable with disclosure + checksums (Smart Connections precedent).
       Inference in a worker; persist weights via IndexedDB/OPFS (Cache API unreliable in the harness pane).
 - [ ] Vault craft: YAML frontmatter (title/authors/DOI/citekey), relative image links, optional

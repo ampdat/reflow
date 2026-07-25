@@ -216,7 +216,9 @@ try {
     }
     case "down": {
       try {
-        execFileSync("pkill", ["-f", `--user-data-dir=${PROFILE}`]);
+        // `--` first: the pattern starts with "--", which pkill would otherwise
+        // parse as its own flags (and then silently match nothing).
+        execFileSync("pkill", ["-f", "--", `--user-data-dir=${PROFILE}`]);
         log("quit");
       } catch {
         log("not running");

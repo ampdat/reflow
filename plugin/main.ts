@@ -25,7 +25,7 @@ import * as pdfjs from "pdfjs-dist";
 
 import { convertPdfBrowser, sanitizeDirname } from "../engine-js/src/browser/engine.js";
 import { configureOrt } from "./ort-env.js";
-import { installProbe } from "./probe.js";
+import { benchPage, installProbe } from "./probe.js";
 
 // The esbuild banner renamed process.release.name so transformers.js (loaded
 // above) would select its onnxruntime-web + WebGPU backend instead of the
@@ -91,6 +91,12 @@ export default class PdfToMdPlugin extends Plugin {
       },
       settings: () => this.settings,
       ortConfig,
+      benchPage: async (path: string, opts?: Record<string, unknown>) => {
+        const f = this.app.vault.getAbstractFileByPath(path);
+        if (!(f instanceof TFile)) throw new Error(`not a file in the vault: ${path}`);
+        const data = new Uint8Array(await this.app.vault.readBinary(f));
+        return benchPage({ transformers, pdfjs, data }, opts as any);
+      },
     });
 
     await this.loadSettings();
