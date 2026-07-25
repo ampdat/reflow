@@ -24,6 +24,8 @@ import * as transformers from "@huggingface/transformers";
 import * as pdfjs from "pdfjs-dist";
 
 import { convertPdfBrowser, sanitizeDirname } from "../engine-js/src/browser/engine.js";
+import { configureOrt } from "./ort-env.js";
+import { installProbe } from "./probe.js";
 
 // The esbuild banner renamed process.release.name so transformers.js (loaded
 // above) would select its onnxruntime-web + WebGPU backend instead of the
@@ -48,88 +50,48 @@ pdfjs.GlobalWorkerOptions.workerSrc =
   "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.worker.min.mjs";
 // Fetch model weights from the HF hub (cached in the renderer after first run).
 (transformers as any).env.allowLocalModels = false;
-// Single-threaded ORT — WebGPU compute needs no wasm threads, and threading is
-// what drags in the node worker_threads path.
-try {
-  (transformers as any).env.backends.onnx.wasm.numThreads = 1;
-} catch {
-  /* ignore */
-}
-
-/**
- * onnxruntime-web's threaded wasm has its own emscripten Node check that, in this
- * renderer, wrongly takes the Node path and does `import('worker_threads')` — which
- * can't resolve. Run `fn` with the environment looking like a plain renderer
- * (process.type === "renderer", no process.versions.node), then restore. Scoped to
- * the conversion so nothing else sees the altered globals.
- */
-async function withRendererEnv<T>(fn: () => Promise<T>): Promise<T> {
-  const proc = typeof process !== "undefined" ? (process as any) : null;
-  const restores: Array<() => void> = [];
-  if (proc) {
-    if (proc.type !== "renderer") {
-      const orig = proc.type;
-      try {
-        proc.type = "renderer";
-      } catch {
-        try {
-          Object.defineProperty(proc, "type", { value: "renderer", configurable: true });
-        } catch {
-          /* ignore */
-        }
-      }
-      restores.push(() => {
-        try {
-          proc.type = orig;
-        } catch {
-          /* ignore */
-        }
-      });
-    }
-    const versions = proc.versions;
-    if (versions && typeof versions.node === "string") {
-      const origNode = versions.node;
-      const set = (v: string | undefined) => {
-        try {
-          versions.node = v;
-        } catch {
-          try {
-            Object.defineProperty(versions, "node", { value: v, configurable: true, writable: true });
-          } catch {
-            /* ignore */
-          }
-        }
-      };
-      set(undefined);
-      restores.push(() => set(origNode));
-    }
-  }
-  try {
-    return await fn();
-  } finally {
-    for (const r of restores) r();
-  }
-}
+// Replace the jsdelivr `wasmPaths` prefix transformers.js installs at import time
+// with our patched emscripten glue — without this, onnxruntime-web can't start in
+// Obsidian's renderer at all. See plugin/ort-env.ts for the full explanation.
+const ortConfig = configureOrt((transformers as any).env.backends.onnx);
 
 interface Settings {
   /** Vault folder for output; empty = alongside the source PDF. */
   outputFolder: string;
   /** 0 = all pages. */
   maxPages: number;
+  /**
+   * Wall-clock budget per page before generation is cut short. Dense pages emit
+   * a lot of DocTags, and WebGPU throughput varies a lot by GPU, so this needs
+   * to be tunable rather than a fixed engine constant.
+   */
+  perPageTimeoutSec: number;
 }
 
-const DEFAULT_SETTINGS: Settings = { outputFolder: "", maxPages: 0 };
+const DEFAULT_SETTINGS: Settings = { outputFolder: "", maxPages: 0, perPageTimeoutSec: 300 };
 
 export default class PdfToMdPlugin extends Plugin {
   settings: Settings = DEFAULT_SETTINGS;
 
   async onload(): Promise<void> {
-    // Diagnostic: did the backend spoof stick, and is WebGPU visible?
     const g = globalThis as any;
     console.log(
-      `[pdf-to-md] backend spoof result: ${g.__pdf2md_spoofResult} | ` +
-        `navigator.gpu: ${typeof navigator !== "undefined" && "gpu" in navigator}`,
+      `[pdf-to-md] backend spoof: ${g.__pdf2md_spoofResult} | ` +
+        `navigator.gpu: ${typeof navigator !== "undefined" && "gpu" in navigator} | ` +
+        `ort glue patched: ${ortConfig.gluePatched} (${ortConfig.glueBytes} B)`,
     );
+
+    // Debug shim (see plugin/probe.ts) — `window.__pdf2md` in the console, or
+    // driven headlessly by tools/obsidian-drive.mjs.
+    installProbe({
+      convertPath: (path: string) => {
+        const f = this.app.vault.getAbstractFileByPath(path);
+        if (!(f instanceof TFile)) throw new Error(`not a file in the vault: ${path}`);
+        return this.convert(f);
+      },
+      settings: () => this.settings,
+      ortConfig,
+    });
 
     await this.loadSettings();
 
@@ -160,29 +122,33 @@ export default class PdfToMdPlugin extends Plugin {
     this.addSettingTab(new PdfToMdSettingTab(this));
   }
 
-  async convert(file: TFile): Promise<void> {
+  /**
+   * Convert `file` and write the package into the vault. Returns a small summary
+   * (rather than nothing) so the debug shim can report the outcome to a driver.
+   */
+  async convert(file: TFile): Promise<Record<string, unknown>> {
     const notice = new Notice(`Converting ${file.name} …`, 0);
+    const started = performance.now();
     try {
       const data = new Uint8Array(await this.app.vault.readBinary(file));
 
-      const doc = await withRendererEnv(() =>
-        convertPdfBrowser(
-          { transformers, pdfjs, data },
-          {
-            maxPages: this.settings.maxPages || undefined,
-            sourceLabel: file.path,
-            titleFallback: file.basename,
-            vlm: {
-              progressCallback: (p: any) => {
-                if (p?.status === "progress" && p.file?.includes("decoder")) {
-                  notice.setMessage(`Downloading model … ${Math.round(p.progress || 0)}%`);
-                } else if (p?.status === "ready") {
-                  notice.setMessage("Running conversion on WebGPU …");
-                }
-              },
+      const doc = await convertPdfBrowser(
+        { transformers, pdfjs, data },
+        {
+          maxPages: this.settings.maxPages || undefined,
+          sourceLabel: file.path,
+          titleFallback: file.basename,
+          vlm: {
+            perPageTimeoutMs: Math.max(1, this.settings.perPageTimeoutSec) * 1000,
+            progressCallback: (p: any) => {
+              if (p?.status === "progress" && p.file?.includes("decoder")) {
+                notice.setMessage(`Downloading model … ${Math.round(p.progress || 0)}%`);
+              } else if (p?.status === "ready") {
+                notice.setMessage("Running conversion on WebGPU …");
+              }
             },
           },
-        ),
+        },
       );
 
       const parent = file.parent?.path ?? "";
@@ -210,10 +176,26 @@ export default class PdfToMdPlugin extends Plugin {
 
       const md = this.app.vault.getAbstractFileByPath(`${folder}/document.md`);
       if (md instanceof TFile) await this.app.workspace.getLeaf(true).openFile(md);
+
+      return {
+        ok: true,
+        folder,
+        title: doc.title,
+        markdownChars: doc.markdown.length,
+        figures: doc.figures.length,
+        warnings: doc.warnings,
+        elapsedSec: Math.round((performance.now() - started) / 1000),
+      };
     } catch (e: any) {
       notice.hide();
       console.error("[pdf-to-md]", e);
       new Notice(`Conversion failed: ${e?.message ?? e}`, 8000);
+      return {
+        ok: false,
+        error: String(e?.message ?? e),
+        stack: String(e?.stack ?? "").split("\n").slice(0, 6).join("\n"),
+        elapsedSec: Math.round((performance.now() - started) / 1000),
+      };
     }
   }
 
@@ -276,6 +258,19 @@ class PdfToMdSettingTab extends PluginSettingTab {
       .addText((t) =>
         t.setValue(String(this.plugin.settings.maxPages)).onChange(async (v) => {
           this.plugin.settings.maxPages = parseInt(v, 10) || 0;
+          await this.plugin.saveSettings();
+        }),
+      );
+
+    new Setting(containerEl)
+      .setName("Per-page time limit (seconds)")
+      .setDesc(
+        "Generation for a page is cut off after this long, and the page is flagged " +
+          "incomplete. Raise it for dense pages or a slower GPU.",
+      )
+      .addText((t) =>
+        t.setValue(String(this.plugin.settings.perPageTimeoutSec)).onChange(async (v) => {
+          this.plugin.settings.perPageTimeoutSec = parseInt(v, 10) || DEFAULT_SETTINGS.perPageTimeoutSec;
           await this.plugin.saveSettings();
         }),
       );

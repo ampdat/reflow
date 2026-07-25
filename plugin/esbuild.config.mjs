@@ -6,35 +6,55 @@ import { copyFileSync, mkdirSync, readFileSync } from "node:fs";
 
 const watch = process.argv.includes("--watch");
 
-// onnxruntime-web's threaded jsep wasm glue detects Node via
-// `typeof globalThis.process?.versions?.node == 'string'` (no renderer guard) and
-// then does `import('worker_threads')` / `import("module")`, which can't resolve as
-// ESM bare specifiers in Obsidian's renderer. Patch that vendored file at bundle
-// time: force the node checks false and neutralize the node-only dynamic imports so
-// emscripten uses the web path (Web Worker / no threads). Runtime spoofing can't do
-// this — Electron locks process.versions.node.
-const patchOrtNodeDetection = {
-  name: "patch-ort-node-detection",
+// onnxruntime-web's standalone emscripten glue ends with a *top-level* await that
+// has no renderer guard:
+//
+//   var isNode = typeof globalThis.process?.versions?.node == 'string';
+//   if (isNode) isPthread = (await import('worker_threads')).workerData === 'em-pthread';
+//
+// In Obsidian's Node-integrated renderer that specifier can't resolve, the module
+// never evaluates, and ORT reports "no available backend found". ORT normally
+// avoids this file (it has the glue inlined), but transformers.js sets a jsdelivr
+// `wasmPaths` prefix, which forces the CDN copy to be imported instead — so the
+// file never passes through this bundle and can't be patched by an onLoad hook.
+//
+// Instead, inline a *patched* copy as text under `virtual:ort-glue`; ort-env.ts
+// serves it from a blob URL via `wasmPaths.mjs`. See plugin/ort-env.ts.
+const ORT_GLUE = "node_modules/@huggingface/transformers/dist/ort-wasm-simd-threaded.jsep.mjs";
+const GLUE_EPILOGUE =
+  "if (isNode) isPthread = (await import('worker_threads')).workerData === 'em-pthread';";
+
+const inlinePatchedOrtGlue = {
+  name: "inline-patched-ort-glue",
   setup(build) {
-    build.onLoad({ filter: /ort-wasm.*\.mjs$/ }, (args) => {
-      let contents = readFileSync(args.path, "utf8");
-      const subs = [
-        ["typeof globalThis.process?.versions?.node == 'string'", "false"],
-        ['"string"==typeof process.versions.node&&"renderer"!=process.type', "false"],
-        ["await import('worker_threads')", "await Promise.resolve({workerData:undefined,Worker:globalThis.Worker})"],
-        ['await import("worker_threads")', 'await Promise.resolve({workerData:undefined,Worker:globalThis.Worker})'],
-        ['await import("module")', 'await Promise.resolve({createRequire:function(){return function(){return {Worker:globalThis.Worker}}}})'],
-        ['require("worker_threads")', "({Worker:globalThis.Worker})"],
-      ];
-      let hits = 0;
-      for (const [from, to] of subs) {
-        if (contents.includes(from)) {
-          contents = contents.split(from).join(to);
-          hits++;
-        }
+    build.onResolve({ filter: /^virtual:ort-glue$/ }, () => ({
+      path: "virtual:ort-glue",
+      namespace: "ort-glue",
+    }));
+    build.onLoad({ filter: /.*/, namespace: "ort-glue" }, () => {
+      const source = readFileSync(ORT_GLUE, "utf8");
+      if (!source.includes(GLUE_EPILOGUE)) {
+        // Fail loudly rather than shipping a glue we only think we patched:
+        // if ORT changes this line, the plugin would silently break again.
+        throw new Error(
+          `[ort-glue] node-detection epilogue not found in ${ORT_GLUE}. ` +
+            `onnxruntime-web changed; re-check the patch in plugin/ort-env.ts.`,
+        );
       }
-      console.log(`  [patch-ort] ${args.path.split("/").pop()}: ${hits}/${subs.length} patterns patched`);
-      return { contents, loader: "js" };
+      const patched = source.replace(GLUE_EPILOGUE, "// [pdf-to-md] node pthread bootstrap removed");
+      // One `worker_threads` reference legitimately survives: the one inside the
+      // module body, which *is* guarded by `"renderer" != process.type` and so is
+      // unreachable here. Anything else means the patch missed something.
+      const remaining = patched.split("worker_threads").length - 1;
+      if (remaining !== 1 || !patched.includes('"renderer"!=process.type')) {
+        throw new Error(
+          `[ort-glue] expected exactly one renderer-guarded worker_threads reference ` +
+            `after patching, found ${remaining} (guard present: ` +
+            `${patched.includes('"renderer"!=process.type')})`,
+        );
+      }
+      console.log(`  [ort-glue] patched ${(patched.length / 1024).toFixed(1)} KB of emscripten glue`);
+      return { contents: patched, loader: "text" };
     });
   },
 };
@@ -59,7 +79,7 @@ const ctx = await esbuild.context({
   outfile: "dist/main.js",
   external: ["obsidian", "electron", "@electron/remote", "@codemirror/*", "@lezer/*"],
   banner: { js: forceWebBackend },
-  plugins: [patchOrtNodeDetection],
+  plugins: [inlinePatchedOrtGlue],
   sourcemap: watch ? "inline" : false,
   minify: !watch,
   logLevel: "info",

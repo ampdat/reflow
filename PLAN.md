@@ -185,30 +185,36 @@ the vault. No API keys, no server, nothing uploads.
       command → `convertPdfBrowser()` on WebGPU → vault package; settings (output folder, max pages);
       esbuild → CJS `main.js`. Bundles clean (engine import resolves). `npm install && npm run build`
       to produce `main.js`; needs a WebGPU Obsidian + first-run model download.
-- [~] **Live in-Obsidian validation — IN PROGRESS, blocked on ORT-in-Electron.** Installed into a real
-      vault (`plugin/install.mjs` → `.obsidian/plugins/pdf-to-md/`). Debugging log, each layer cleared:
-    1. ✅ **Backend selection.** Obsidian's Node-integrated renderer made transformers.js pick its
+- [x] **ORT runs on WebGPU inside Obsidian — blocker cleared.** Two independent Node-detection traps in
+      Obsidian's Node-integrated renderer, both now fixed and verified live:
+    1. ✅ **Backend selection.** transformers.js read `process.release.name === "node"` and picked its
        cpu-only onnxruntime-node backend (`Unsupported device: "webgpu"`). Fixed by an esbuild banner
-       that renames `process.release.name` off `"node"` so transformers captures `IS_NODE_ENV=false`
-       and offers onnxruntime-web + WebGPU (commits `c583fab`). Console confirms `spoof result:
-       obsidian | navigator.gpu: true`.
-    2. ✅ Model **downloads** and the **WebGPU backend is selected**.
-    3. ❌ **BLOCKER: onnxruntime-web threaded wasm.** `ort-wasm-simd-threaded.jsep.mjs` has its *own*
-       emscripten Node check — `var isNode = typeof globalThis.process?.versions?.node == 'string'`
-       (no `process.type !== "renderer"` guard) — true in the renderer, so it runs
-       `await import('worker_threads')`, an ESM bare specifier that can't resolve →
-       *"no available backend found. ERR: [webgpu] Failed to resolve module specifier 'worker_threads'"*.
-       Runtime spoofing failed (Electron locks `process.versions.node`). A build-time esbuild `onLoad`
-       patch of the glue (commit WIP) **did not fire** — the glue enters the bundle via a path the
-       `/ort-wasm.*\.mjs$/` filter missed; need to find how esbuild includes it (metafile).
-    - **Candidate fixes (next session):** (a) find the real resolve path and patch the glue at build
-      time (or `patch-package` on `node_modules`); (b) force a **non-threaded** ORT wasm so the
-      `-threaded.jsep` glue is never loaded; (c) **run inference in a Web Worker** — no Node `process`
-      there, so emscripten naturally takes the web path (cleanest, but WebGPU-in-worker needs checking);
-      (d) provide `worker_threads` via a bundled stub exporting the real `globalThis.Worker`.
-    - Note: the same engine already passes all 4 fixtures on CPU (M3) and ran correctly on WebGPU in
-      the standalone harness (Electron 42) — the blocker is ORT's Node-detection *inside Obsidian*, not
-      the conversion logic.
+       that renames `process.release.name` before any bundled module evaluates, so transformers
+       captures `IS_NODE_ENV=false` (`c583fab`).
+    2. ✅ **Wasm glue loading (the real blocker).** ORT only uses the emscripten glue *already inlined*
+       in its bundle when no `wasmPaths` override is set (`importWasmModule()` in
+       `wasm-utils-import.ts`). transformers.js unconditionally sets a jsdelivr `wasmPaths` prefix at
+       import time, so ORT instead dynamic-imported the standalone `ort-wasm-simd-threaded.jsep.mjs`
+       from the CDN — whose **top-level await** epilogue,
+       `var isNode = typeof globalThis.process?.versions?.node == 'string'; if (isNode) isPthread =
+       (await import('worker_threads'))…`, has no `process.type !== "renderer"` guard (unlike the check
+       in the module body, which does). Unresolvable specifier → module never evaluates → *"no available
+       backend found."* Unfixable at runtime (Electron makes `process.versions.node` non-writable) and
+       invisible to esbuild `onLoad` (the file is fetched from a CDN, never bundled) — which is why the
+       earlier build-time patch attempt never fired.
+       **Fix:** `plugin/ort-env.ts` inlines a build-time-patched copy of the glue as text, serves it from
+       a blob URL, and sets `wasmPaths = { mjs, wasm }`. The esbuild plugin throws if the patched
+       epilogue stops matching, so an ORT bump can't silently reintroduce it.
+    - **Verified live:** a 94-byte `Add` ONNX model runs on the **webgpu** EP in Obsidian 1.12.7 in
+      ~1.5 s cold (`[11,22,33,44]`); flipping `ortSmoke` back to the old config reproduces the exact
+      original error on demand.
+- [x] **Headless Obsidian driving** (`plugin/tools/obsidian-drive.mjs`). Conversion is non-interactive, so
+      it needs no human in the loop: the tool launches an *isolated* Obsidian (`--user-data-dir` +
+      `--remote-debugging-port`, scratch vault at `.obsidian-test/`, runs alongside the real session),
+      attaches over CDP, evaluates JS in the plugin's context and streams the renderer console back.
+      With `window.__pdf2md` (`plugin/probe.ts`: `envReport` / `ortSmoke` / `convertPath`) the whole
+      build → install → reload → run → read-result loop is scripted. **This is the debugging capability
+      the previous session lacked** — every finding above was produced without touching the UI.
 - [ ] Model download on first enable with disclosure + checksums (Smart Connections precedent).
       Inference in a worker; persist weights via IndexedDB/OPFS (Cache API unreliable in the harness pane).
 - [ ] Vault craft: YAML frontmatter (title/authors/DOI/citekey), relative image links, optional

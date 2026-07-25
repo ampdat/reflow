@@ -9,7 +9,10 @@
     "allowSyntheticDefaultImports": true,
     "skipLibCheck": true,
     "noEmit": true,
-    "allowJs": true
+    "allowJs": true,
+    // onnxruntime-web's package.json "exports" hides its own types.d.ts from
+    // Bundler-mode resolution; point at it directly.
+    "paths": { "onnxruntime-web": ["./node_modules/onnxruntime-web/types.d.ts"] }
   },
-  "include": ["main.ts", "../engine-js/src/**/*.ts"]
+  "include": ["main.ts", "probe.ts", "ort-env.ts", "virtual.d.ts", "../engine-js/src/**/*.ts"]
 }

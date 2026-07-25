@@ -40,23 +40,76 @@ or if it's already enabled, **reload** (Cmd+R) / toggle it off·on to pick up th
   a progress notice, then caches them in the renderer. Later converts skip the download.
 - pdf.js worker + ORT wasm are fetched from a CDN on first use.
 
-## Status: WebGPU works, blocked on ORT-in-Electron (WIP)
+## Running ONNX inside Obsidian: the two Node-detection traps
 
-Installed and loading in a real vault. Cleared so far: transformers.js now selects the
-onnxruntime-web + WebGPU backend (an esbuild banner renames `process.release.name` off
-`"node"`, so it stops picking the cpu-only node backend — console logs
-`backend spoof result: obsidian | navigator.gpu: true`), the model downloads, and the
-WebGPU backend is chosen.
+Obsidian's renderer has Node integration, so libraries that sniff for Node see a
+half-Node, half-browser environment and pick the wrong path. Two separate layers
+had to be corrected; both are now fixed and verified in a real Obsidian.
 
-**Current blocker:** onnxruntime-web's *threaded* wasm glue
-(`ort-wasm-simd-threaded.jsep.mjs`) has its own emscripten Node check
-(`typeof globalThis.process?.versions?.node == 'string'`, no renderer guard) that is true
-in Obsidian's renderer, so it runs `import('worker_threads')` — an ESM bare specifier that
-can't resolve → *"no available backend found … Failed to resolve module specifier
-'worker_threads'"*. Runtime spoofing can't fix it (Electron locks `process.versions.node`);
-the in-progress esbuild `onLoad` patch of that glue didn't fire (wrong resolve path).
-Candidate fixes are logged in [../PLAN.md](../PLAN.md) M4 (patch the glue at build time /
-force non-threaded ORT / run inference in a Web Worker where there's no Node `process`).
+**1. transformers.js picked the CPU-only backend.** It reads
+`process.release.name === "node"` at import time to set `IS_NODE_ENV`, which made it
+choose `onnxruntime-node` (no WebGPU: *"Unsupported device: webgpu"*). An esbuild
+banner renames `process.release.name` before any bundled module evaluates, so
+transformers captures `IS_NODE_ENV=false` and offers onnxruntime-web + WebGPU;
+`main.ts` restores the real value immediately after.
+
+**2. onnxruntime-web couldn't load its wasm glue.** ORT normally uses the emscripten
+glue *already inlined* in its bundle — but only when no `wasmPaths` override is set
+(`importWasmModule()` in `onnxruntime-web/lib/wasm/wasm-utils-import.ts`).
+transformers.js unconditionally sets a jsdelivr `wasmPaths` prefix at import time, so
+ORT instead dynamically imported the standalone `ort-wasm-simd-threaded.jsep.mjs` from
+the CDN. That file ends with a **top-level await** whose Node check has no renderer
+guard (unlike the one in the module body, which correctly tests
+`"renderer" != process.type`):
+
+```js
+var isNode = typeof globalThis.process?.versions?.node == 'string';
+if (isNode) isPthread = (await import('worker_threads')).workerData === 'em-pthread';
+```
+
+In the renderer `process.versions.node` is a string, `worker_threads` is not a
+resolvable ESM specifier, the module never evaluates, and ORT reports *"no available
+backend found. ERR: [webgpu] Failed to resolve module specifier 'worker_threads'"*.
+
+It can't be fixed at runtime (Electron makes `process.versions.node` non-writable) and
+it can't be patched by a normal esbuild `onLoad` hook, because the offending file is
+fetched from a CDN at runtime and never enters the bundle. The fix (see
+[`ort-env.ts`](ort-env.ts)) inlines a **build-time-patched copy** of the glue as text,
+serves it from a blob URL, and overrides `wasmPaths` with `{ mjs, wasm }`. The build
+fails loudly if that epilogue ever stops matching, so a future ORT bump can't silently
+reintroduce the break.
+
+## Debugging: driving Obsidian headlessly
+
+Conversion is a non-interactive file transformation, so it can be tested without a
+human clicking through the UI. [`tools/obsidian-drive.mjs`](tools/obsidian-drive.mjs)
+launches an **isolated** Obsidian (its own `--user-data-dir` and scratch vault at
+`../.obsidian-test/`, so it runs alongside your real session without touching it),
+attaches over the Chrome DevTools Protocol, and evaluates JS in the plugin's own
+context — streaming the renderer console back to the terminal.
+
+```bash
+node tools/obsidian-drive.mjs up                # launch + open the scratch vault
+node tools/obsidian-drive.mjs reload            # pick up a new build, re-enable plugin
+node tools/obsidian-drive.mjs eval 'return __pdf2md.envReport()'
+node tools/obsidian-drive.mjs console 60        # tail the renderer console
+node tools/obsidian-drive.mjs down
+```
+
+The plugin exposes a debug shim at `window.__pdf2md` (see [`probe.ts`](probe.ts)) —
+usable from the devtools console too:
+
+- `envReport()` — what the renderer looks like to Node-sniffing libraries
+  (`process.type`, `process.versions.node`, WebGPU, SharedArrayBuffer, wasm SIMD).
+- `ortSmoke({ ep, strategy })` — runs a **94-byte** `Add` ONNX model on the chosen
+  execution provider. Answers "does ORT start at all here" in ~1.5 s with no model
+  download and no PDF, which is where every failure so far has been.
+  `strategy: "baseline"` deliberately restores the broken config to reproduce the
+  bug on demand.
+- `convertPath("file.pdf")` — the real conversion, returning a summary object.
+
+A full loop is `npm run build && npm run install:vault && node tools/obsidian-drive.mjs reload`,
+then an `eval`.
 
 ## Other known gaps (tracked in ../PLAN.md, M4)
 

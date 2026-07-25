@@ -22,3 +22,6 @@ target/
 
 # comparison / validation scratch
 out_compare/
+
+# isolated Obsidian instance used by plugin/tools/obsidian-drive.mjs
+.obsidian-test/
