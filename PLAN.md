@@ -226,13 +226,30 @@ the vault. No API keys, no server, nothing uploads.
     - **Not a hardware limit:** the adapter is real (`apple`/`metal-3`, not a fallback) and advertises
       `shader-f16`, `subgroups`, and 4 GB `maxStorageBufferBindingSize`. So the fp32 decoder is a
       *choice*, not a constraint.
-    - **`fp16` decoder garbles too** (measured 2026-07-24): emits `!!!`, repetition guard fires at 3
-      tokens — the same failure as q4f16. So we are *pinned to fp32*, and fp32 is unusably slow. Half
-      precision being broken on two separate dtypes points at the ORT 1.22 WebGPU kernels rather than
-      the weights, which raises the value of the transformers 4.x / ORT 1.26 upgrade below.
-    - **Remaining suspect:** ORT's `VerifyEachNodeIsAssignedToAnEp` warning on every session — decoder
-      ops falling back to CPU would round-trip GPU↔CPU per token, with wasm pinned to `numThreads = 1`.
-      A `device:"wasm"` control tells us whether WebGPU is buying anything at all.
+    - **Cost split** (8-token vs 32-token run, ORT 1.26): **prefill ~15 s one-time, decode ~0.41 s/token
+      (~2.4 tok/s)**. Prompt is 1142 tokens at 1224x1584 — *not* an Idefics3 image-split blowup, so the
+      prefix is not the problem. Pages are decode-dominated → ~10 min/page.
+    - **`device:"wasm"` control:** <16 tokens in ~700 s, i.e. <0.02 tok/s. WebGPU *is* doing real work
+      (~50x wasm), so wholesale CPU fallback is not the explanation.
+    - **dtype matrix** (page 1, 32-token cap, ORT 1.26). Any **f16** path garbles to `!!!` (repetition
+      guard fires at 3 tokens) on *both* ORT 1.22 and 1.26 — so it is the model's fp16 numerics on
+      WebGPU, not a runtime version. int8/int4 are numerically fine but no faster:
+
+      | dtype  | tok/s | output |
+      |--------|-------|--------|
+      | fp32   | 1.12  | ✅ correct |
+      | fp16   | 0.16  | ❌ `!!!` |
+      | q4f16  | 0.19  | ❌ `!!!` |
+      | q8     | 0.30  | ✅ correct |
+      | q4     | 1.34  | ✅ correct (needs fixture validation) |
+
+    - **So no dtype rescues it**: best is ~1.3 tok/s, and a 258M decoder on an M-series GPU should be
+      ~10-30x that. The gap is still unexplained.
+    - **Next diagnostics, in order:** (1) run the standalone `engine-js/web` harness on *this* machine —
+      if it is also ~1 tok/s then Obsidian is not the variable and the M4-probe "41 s/page" figure is
+      not reproducible; (2) enable ORT verbose logging to get the actual per-node EP assignment behind
+      the `VerifyEachNodeIsAssignedToAnEp` warning; (3) check whether Obsidian's Electron launch flags
+      constrain WebGPU.
 - [ ] Adopt from `cavi-ai/claude-obsidian` (reviewed 2026-07-24, transformers 4.2.0 + ORT 1.26):
       **`env.useWasmCache = true`** (4.x) caches the ORT sidecar binaries in the Cache API → fully offline
       after first run, dropping our runtime jsdelivr dependency for the 4 MB wasm; and their
