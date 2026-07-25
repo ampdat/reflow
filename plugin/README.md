@@ -92,9 +92,15 @@ context — streaming the renderer console back to the terminal.
 node tools/obsidian-drive.mjs up                # launch + open the scratch vault
 node tools/obsidian-drive.mjs reload            # pick up a new build, re-enable plugin
 node tools/obsidian-drive.mjs eval 'return __pdf2md.envReport()'
+node tools/obsidian-drive.mjs run 'return await __pdf2md.convertPath("attention.pdf")'
 node tools/obsidian-drive.mjs console 60        # tail the renderer console
 node tools/obsidian-drive.mjs down
 ```
+
+Use `run` (not `eval`) for anything measured in minutes: `eval` holds one CDP call
+open for the whole job, so a dropped socket loses the reply and the caller hangs
+even though the work finished. `run` stores the promise in the page and polls,
+which also gives progress while it works.
 
 The plugin exposes a debug shim at `window.__pdf2md` (see [`probe.ts`](probe.ts)) —
 usable from the devtools console too:

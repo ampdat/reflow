@@ -232,9 +232,16 @@ the vault. No API keys, no server, nothing uploads.
       ~14 tok/s), which is exactly why the *comparison* looked so lopsided.
     - **Consequence: the onnxruntime-node pivot is unnecessary.** No per-platform native binaries, no
       change to the pure-JS distribution story. The WebGPU path stays.
+    - **End-to-end on an idle machine: 2 pages of `attention.pdf` in 65 s (~32 s/page), 7207 chars,
+      both pages reaching EOS with no truncation warning.** That is consistent with the original
+      M4-probe figure of ~41 s/page, which was right all along. **Gate 4 conversion quality is met.**
     - **Lesson for future benchmarking:** always confirm the machine is idle first, and prefer
       token-capped runs — a wall-clock-capped run silently reports "truncated page" for what is really
       "loaded machine", which is what sent this investigation down a blind alley.
+    - **Tooling lesson:** a completed 57-minute "hang" turned out to be the driver, not the plugin —
+      one `Runtime.evaluate` held open for the whole conversion, whose reply was lost when the socket
+      dropped. `obsidian-drive.mjs` now rejects in-flight commands on socket close, and `run`/`run-file`
+      kick the job into a page global and poll for it. Use those for anything minutes-long.
     - Still valid from that work (correctness results, not timing-dependent): **any f16 dtype garbles**
       to `!!!` on both ORT 1.22 and 1.26, so fp32 stays pinned; q8/q4 are numerically fine. The tok/s
       figures in that dtype table are contaminated and would need re-measuring to be trusted.

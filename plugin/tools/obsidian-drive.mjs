@@ -15,12 +15,20 @@
  *   node tools/obsidian-drive.mjs up                 # launch + open the vault
  *   node tools/obsidian-drive.mjs eval '<js>'        # evaluate, print JSON
  *   node tools/obsidian-drive.mjs eval-file <path>   # ditto, from a file
+ *   node tools/obsidian-drive.mjs run '<js>'         # long jobs: kick off + poll
+ *   node tools/obsidian-drive.mjs run-file <path>    # ditto, from a file
+ *   node tools/obsidian-drive.mjs reload             # pick up a new build
  *   node tools/obsidian-drive.mjs console [seconds]  # tail the renderer console
  *   node tools/obsidian-drive.mjs down               # quit the instance
  *
  * Expressions are wrapped in an async IIFE and awaited, so `eval` can just do
  * `return await somethingSlow()`. Console output produced during an `eval` is
  * interleaved on stderr; the JSON result goes to stdout.
+ *
+ * Use `run` for anything measured in minutes (a real conversion). `eval` holds a
+ * single CDP call open for the whole job, so a dropped socket loses the reply and
+ * the caller waits forever; `run` stores the promise in the page and polls, so a
+ * drop costs one interval and progress is visible while it works.
  */
 import { spawn, execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
@@ -82,6 +90,14 @@ class Cdp {
         this.onEvent(msg);
       }
     });
+    // Without this, a dropped socket leaves every in-flight command pending
+    // forever — which is exactly how a finished conversion looked like a hang.
+    const die = (why) => {
+      for (const [, { reject }] of this.pending) reject(new Error(`CDP connection ${why}`));
+      this.pending.clear();
+    };
+    ws.addEventListener("close", () => die("closed"));
+    ws.addEventListener("error", () => die("errored"));
   }
 
   static async connect(url) {
@@ -204,6 +220,51 @@ async function evaluate(expression, { timeoutMs = 900_000, quiet = false } = {})
   return result.result.value;
 }
 
+/**
+ * Run a long job without holding a single CDP call open for its whole duration.
+ *
+ * A multi-minute `Runtime.evaluate` is fragile: if the socket drops while the
+ * renderer is busy, the reply is lost and the caller waits forever (a completed
+ * conversion looked like a 57-minute hang). Instead, kick the work off into a
+ * global and poll for completion with short round trips — each poll reconnects,
+ * so a dropped socket costs one interval instead of the whole run.
+ */
+async function runJob(expression, { pollMs = 5000, timeoutMs = 3_600_000 } = {}) {
+  const JOB = "__pdf2mdJob";
+  await evaluate(
+    `globalThis.${JOB} = { done: false, result: null, error: null, started: Date.now() };
+     (async () => { ${expression} })().then(
+       (r) => { globalThis.${JOB}.result = r; globalThis.${JOB}.done = true; },
+       (e) => { globalThis.${JOB}.error = String(e?.stack || e?.message || e); globalThis.${JOB}.done = true; },
+     );
+     return "started";`,
+    { timeoutMs: 30_000, quiet: true },
+  );
+  log(`job started; polling every ${pollMs / 1000}s`);
+
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    await new Promise((r) => setTimeout(r, pollMs));
+    if (Date.now() > deadline) throw new Error("job exceeded timeout");
+    let state;
+    try {
+      state = await evaluate(
+        `const j = globalThis.${JOB}; return j ? { done: j.done, result: j.result, error: j.error, elapsedSec: Math.round((Date.now() - j.started) / 1000) } : null;`,
+        { timeoutMs: 30_000, quiet: true },
+      );
+    } catch (e) {
+      log(`  (poll failed: ${e.message}; retrying)`);
+      continue;
+    }
+    if (!state) throw new Error("job state vanished (renderer reloaded?)");
+    if (state.done) {
+      if (state.error) throw new Error(state.error);
+      return state.result;
+    }
+    log(`  …${state.elapsedSec}s`);
+  }
+}
+
 // ----------------------------------------------------------------------- cli
 
 const [cmd, ...rest] = process.argv.slice(2);
@@ -263,6 +324,14 @@ try {
     case "eval-file": {
       const src = cmd === "eval" ? rest.join(" ") : readFileSync(rest[0], "utf8");
       const value = await evaluate(src);
+      console.log(typeof value === "string" ? value : JSON.stringify(value, null, 2));
+      break;
+    }
+    case "run":
+    case "run-file": {
+      // Same as eval, but for work measured in minutes — see runJob().
+      const src = cmd === "run" ? rest.join(" ") : readFileSync(rest[0], "utf8");
+      const value = await runJob(src);
       console.log(typeof value === "string" ? value : JSON.stringify(value, null, 2));
       break;
     }
