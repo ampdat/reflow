@@ -84,5 +84,10 @@ export interface AssembledDocument {
   warnings: string[];
   model: string;
   executionProviders: string[];
-  timings: { inference: number; assemble: number };
+  timings: {
+    inference: number;
+    assemble: number;
+    /** Per-page inference cost — reveals degradation a total would hide. */
+    perPage: Array<{ page: number; ms: number; genTokens: number; tokensPerSec: number }>;
+  };
 }

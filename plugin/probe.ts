@@ -32,6 +32,14 @@ let sharedWasmPaths: unknown = null;
 
 export function setOrtWasmPaths(paths: unknown): void {
   sharedWasmPaths = paths;
+  // Apply immediately, not just on the ortSmoke path: ad-hoc probes reach for
+  // `__pdf2md.ort` directly, and without this they hit "cannot determine the
+  // script source URL" before any execution provider gets a chance.
+  try {
+    if (paths) (ort as any).env.wasm.wasmPaths = paths;
+  } catch {
+    /* ignore */
+  }
 }
 
 function modelBytes(): Uint8Array {
@@ -198,7 +206,9 @@ export async function benchPage(
 
 /** Install the shim. Returns the object for convenience. */
 export function installProbe(extra: Record<string, unknown> = {}) {
-  const api = { envReport, ortSmoke, ...extra };
+  // Expose ORT itself so ad-hoc probes (tools/webnn-probe.js) can try execution
+  // provider configurations without a plugin rebuild.
+  const api = { envReport, ortSmoke, ort, ...extra };
   (window as any).__pdf2md = api;
   return api;
 }

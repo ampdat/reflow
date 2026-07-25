@@ -193,6 +193,7 @@ export default class PdfToMdPlugin extends Plugin {
         figures: doc.figures.length,
         warnings: doc.warnings,
         elapsedSec: Math.round((performance.now() - started) / 1000),
+        perPage: doc.timings.perPage,
       };
     } catch (e: any) {
       notice.hide();

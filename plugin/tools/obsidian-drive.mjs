@@ -180,11 +180,17 @@ async function up() {
     log(`Obsidian already listening on :${PORT}`);
   } else {
     log(`launching isolated Obsidian (profile=${PROFILE}, vault=${VAULT})`);
+    // OBSIDIAN_EXTRA_ARGS lets us launch with Chromium switches Obsidian does not
+    // set itself — e.g. `--enable-features=WebMachineLearningNeuralNetwork` to
+    // tell whether WebNN is absent because Obsidian leaves it off or because this
+    // Electron can't do it at all.
+    const extra = (process.env.OBSIDIAN_EXTRA_ARGS ?? "").split(" ").filter(Boolean);
     const child = spawn(
       APP,
-      [`--user-data-dir=${PROFILE}`, `--remote-debugging-port=${PORT}`, "--no-first-run"],
+      [`--user-data-dir=${PROFILE}`, `--remote-debugging-port=${PORT}`, "--no-first-run", ...extra],
       { detached: true, stdio: "ignore" },
     );
+    if (extra.length) log(`  extra args: ${extra.join(" ")}`);
     child.unref();
   }
   const target = await waitForTarget();

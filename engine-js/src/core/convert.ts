@@ -40,13 +40,23 @@ export async function assembleDocument(
   let figCount = 0;
   let droppedSpans = false;
   let inference = 0;
+  const perPage: Array<{ page: number; ms: number; genTokens: number; tokensPerSec: number }> = [];
 
   for (let p = 1; p <= lastPage; p++) {
     const page = await pages.renderPage(p);
 
     const t0 = Date.now();
-    const { docTags, truncated } = await vlm.pageToDocTags(page.rgba, page.width, page.height);
-    inference += Date.now() - t0;
+    const { docTags, truncated, genTokens } = await vlm.pageToDocTags(
+      page.rgba,
+      page.width,
+      page.height,
+    );
+    const pageMs = Date.now() - t0;
+    inference += pageMs;
+    // Per-page, not just the total: on WebGPU the cost per page climbs steeply
+    // through a document (a 2-page run looks fine while a 15-page run does not),
+    // and only a per-page series makes that visible.
+    perPage.push({ page: p, ms: pageMs, genTokens, tokensPerSec: +(genTokens / (pageMs / 1000)).toFixed(2) });
 
     if (truncated) {
       pageWarnings.push(`page ${p}: generation stopped early (${truncated}) — output may be incomplete`);
@@ -94,6 +104,6 @@ export async function assembleDocument(
     warnings,
     model: vlm.modelLabel,
     executionProviders: vlm.executionProviders,
-    timings: { inference, assemble: Date.now() - tAssemble },
+    timings: { inference, assemble: Date.now() - tAssemble, perPage },
   };
 }
