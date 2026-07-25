@@ -38,6 +38,13 @@ const pageList = (values.pages ?? "1").split(",").map((s) => parseInt(s.trim(), 
 const maxNewTokens = parseInt(values["max-new-tokens"] ?? "128", 10);
 const device = (values.device ?? "cpu") as "cpu" | "webgpu" | "auto";
 
+/** RSS is what sizes the machine: ORT arenas and weights live outside the JS heap. */
+const mem = () => {
+  const m = process.memoryUsage();
+  return { rssMb: Math.round(m.rss / 1048576), heapMb: Math.round(m.heapUsed / 1048576) };
+};
+
+const memBaseline = mem();
 const t0 = Date.now();
 const pages = await loadPdf(new Uint8Array(await readFile(pdfPath)));
 const tPdf = Date.now();
@@ -50,6 +57,8 @@ const vlm = await loadVlm({
   perPageTimeoutMs: 3_600_000,
 });
 const tModel = Date.now();
+const memAfterModel = mem();
+let peakRssMb = memAfterModel.rssMb;
 
 const results = [];
 try {
@@ -64,8 +73,11 @@ try {
       rendered.height,
     );
     const genSec = (Date.now() - tR1) / 1000;
+    const m = mem();
+    if (m.rssMb > peakRssMb) peakRssMb = m.rssMb;
 
     results.push({
+      ...m,
       page,
       device,
       dtype: vlm.modelLabel,
@@ -96,6 +108,7 @@ process.stdout.write(
     {
       pdfLoadSec: +((tPdf - t0) / 1000).toFixed(2),
       modelLoadSec: +((tModel - tPdf) / 1000).toFixed(2),
+      memory: { baseline: memBaseline, afterModelLoad: memAfterModel, peakRssMb },
       results,
     },
     null,
