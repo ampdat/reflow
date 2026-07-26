@@ -29,14 +29,30 @@ export interface Guard {
   triggered: string | null;
 }
 
-/** A StoppingCriteria that halts on repetition or a wall-clock timeout. */
-export function createGuard(Base: any, timeoutMs: number, maxPeriod = 16): Guard {
+/**
+ * A StoppingCriteria that halts on repetition, a wall-clock timeout, or an
+ * abort.
+ *
+ * `signal` is how a cancel reaches a generation already in flight: `generate()`
+ * is one long await, so the only place a host's "stop" can take effect before
+ * the page finishes is here, between decode steps.
+ */
+export function createGuard(
+  Base: any,
+  timeoutMs: number,
+  maxPeriod = 16,
+  signal?: { aborted: boolean },
+): Guard {
   const start = Date.now();
   const recent: number[] = [];
   const guard = new (class extends Base {
     triggered: string | null = null;
     _call(input_ids: number[][]): boolean[] {
       const ids = input_ids[0] ?? [];
+      if (signal?.aborted) {
+        this.triggered ??= "aborted";
+        return input_ids.map(() => true);
+      }
       if (Date.now() - start > timeoutMs) {
         this.triggered ??= "timeout";
         return input_ids.map(() => true);

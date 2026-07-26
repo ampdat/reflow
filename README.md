@@ -92,8 +92,8 @@ Quality is measured, not vibed. `fixtures/` holds a curated paper set — attent
 
 - ✅ **M1 (Python bootstrap, now frozen reference oracle):** the artifact contract + engine-independent fixture suite.
 - ✅ **M2 (`engine-js/`, pure JS):** pdf.js + granite-docling-258M ONNX (transformers.js) + a hand-written DocTags→Markdown parser + a degenerate-generation guard. Offline unit-tested (20/20).
-- ✅ **M3 (parity):** all 4 fixtures × TS-CPU vs Python oracle pass **all 7 ground-truth checks**; numeric table cells intact; equation-dense vae handled (35 vs 31 math blocks). CPU fp32 is correct-but-slow; **WebGPU validated in Electron at ~6× CPU speed**, quality-equal — the usable path.
-- 🔨 **M4:** package `engine-js/` as an Obsidian desktop plugin (WebGPU in the renderer).
+- ✅ **M3 (parity):** all 4 fixtures × TS-CPU vs Python oracle pass **all 7 ground-truth checks**; numeric table cells intact; equation-dense vae handled (35 vs 31 math blocks). fp32 everywhere — any f16 dtype garbles. **WebGPU and native CPU turn out to be within the same order** (an early "~6× CPU" figure did not reproduce; see PLAN.md), so WebGPU stays for the pure-JS distribution story rather than for speed.
+- 🔨 **M4 (Obsidian plugin):** converts end-to-end on WebGPU in Obsidian's renderer — right-click a PDF, get a vault package. A progress dialog reports page, tokens, elapsed and ETA, cancels mid-page, and detaches to the status bar so you can keep reading. **The "conversion dies after a few pages" bug is fixed**: pdf.js schedules page rasterisation through `requestAnimationFrame`, which Chromium never fires while a window is hidden, so conversions parked forever the moment you switched away — nothing to do with WebGPU. Remaining before Gate 4: first-run model download UX, weight caching, and the renderer memory growth noted in PLAN.md.
 - 📄 Full engineering log — CPU/WebGPU dtype findings, the LiteRT.js evaluation, per-target notes: [docs/perf-and-portability.md](./docs/perf-and-portability.md).
 
 ## License

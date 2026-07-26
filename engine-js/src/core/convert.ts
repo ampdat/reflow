@@ -13,6 +13,27 @@ import { cleanMath } from "../mathjax.js";
 import { warnImageOnly } from "../meta.js";
 import type { AssembledDocument, AssembledFigure, PageSource, Vlm } from "./types.js";
 
+/**
+ * A tick a host UI can render. Conversion is minutes long and page-granular, so
+ * "started" and "finished" are not enough information to show a user — without
+ * these the only honest UI is a spinner.
+ */
+export type ConvertProgress =
+  | { phase: "render"; page: number; pageCount: number }
+  | { phase: "generate"; page: number; pageCount: number }
+  | { phase: "page-done"; page: number; pageCount: number; ms: number; genTokens: number };
+
+/** Thrown when `signal` aborts. `name` follows the DOM convention. */
+export function abortError(): Error {
+  const err = new Error("conversion cancelled");
+  err.name = "AbortError";
+  return err;
+}
+
+function throwIfAborted(signal?: { aborted: boolean }): void {
+  if (signal?.aborted) throw abortError();
+}
+
 export interface AssembleOptions {
   /** Process at most this many pages (0/undefined = all). */
   maxPages?: number;
@@ -24,6 +45,13 @@ export interface AssembleOptions {
   ocr?: boolean;
   /** ISO date for frontmatter `created`; defaults to today. */
   created?: string;
+  /** Per-page progress for a host UI. */
+  onProgress?: (p: ConvertProgress) => void;
+  /**
+   * Cancellation. Checked between pages here; pass the same signal to the VLM so
+   * a cancel also interrupts a generation already running (see `createGuard`).
+   */
+  signal?: { aborted: boolean };
 }
 
 export async function assembleDocument(
@@ -43,7 +71,10 @@ export async function assembleDocument(
   const perPage: Array<{ page: number; ms: number; genTokens: number; tokensPerSec: number }> = [];
 
   for (let p = 1; p <= lastPage; p++) {
+    throwIfAborted(opts.signal);
+    opts.onProgress?.({ phase: "render", page: p, pageCount: lastPage });
     const page = await pages.renderPage(p);
+    opts.onProgress?.({ phase: "generate", page: p, pageCount: lastPage });
 
     const t0 = Date.now();
     const { docTags, truncated, genTokens } = await vlm.pageToDocTags(
@@ -53,10 +84,17 @@ export async function assembleDocument(
     );
     const pageMs = Date.now() - t0;
     inference += pageMs;
-    // Per-page, not just the total: on WebGPU the cost per page climbs steeply
-    // through a document (a 2-page run looks fine while a 15-page run does not),
-    // and only a per-page series makes that visible.
+    // Per-page, not just the total. This series was added to chase an apparent
+    // "cost per page climbs steeply on WebGPU"; measured properly (token-capped,
+    // so every page does identical work) it is flat — 8 pages within ±4% and RSS
+    // within 2%. The real fault was the rAF render stall in browser/pdf.ts: a
+    // page that never finishes reads as an infinitely expensive one. Kept
+    // because it is what distinguishes those two, and it is cheap.
     perPage.push({ page: p, ms: pageMs, genTokens, tokensPerSec: +(genTokens / (pageMs / 1000)).toFixed(2) });
+    // After generation, not before: a cancel lands inside `generate()` via the
+    // guard, so the abort is only observable once it returns.
+    throwIfAborted(opts.signal);
+    opts.onProgress?.({ phase: "page-done", page: p, pageCount: lastPage, ms: pageMs, genTokens });
 
     if (truncated) {
       pageWarnings.push(`page ${p}: generation stopped early (${truncated}) — output may be incomplete`);

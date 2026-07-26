@@ -181,6 +181,9 @@ export async function benchPage(
     return {
       page,
       device,
+      /** What ORT actually ran on — not what was requested. */
+      executionProviders: vlm.executionProviders,
+      wasmPaths: (deps.transformers as any).env?.backends?.onnx?.wasm?.wasmPaths ?? null,
       dtype: vlm.modelLabel,
       maxNewTokens,
       pdfLoadSec: +((tPdf - t0) / 1000).toFixed(2),
@@ -202,6 +205,117 @@ export async function benchPage(
     vlm.dispose();
     await pages.destroy();
   }
+}
+
+/**
+ * The multi-page twin of `benchPage`: **one** VLM instance, N pages, each capped
+ * at the same token count.
+ *
+ * `benchPage` builds and disposes a model per call, so it cannot see anything
+ * that accumulates *within* a document — which is exactly the reported failure
+ * (a 2-page run looks fine, a 15-page run does not). Holding the model across
+ * pages and giving every page identical work (a token cap, not a whole page)
+ * makes degradation legible: with constant work per page, a rising `genSec` is
+ * accumulation, not a denser page.
+ *
+ * Mirrors `engine-js/tools/bench.ts` field-for-field so the Node/CPU curve and
+ * this one can be compared directly.
+ */
+export async function benchPages(
+  deps: { transformers: any; pdfjs: any; data: Uint8Array },
+  {
+    pages: pageList = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+    maxNewTokens = 128,
+    device = "webgpu",
+    dtype = undefined as Record<string, string> | undefined,
+  } = {},
+) {
+  /** Renderer RSS (Node integration) + JS heap. GPU buffers show up in neither. */
+  const mem = () => {
+    const p: any = typeof process !== "undefined" ? process : null;
+    const rss = p?.memoryUsage ? p.memoryUsage().rss : null;
+    const heap = (performance as any).memory?.usedJSHeapSize ?? null;
+    return {
+      rssMb: rss == null ? null : Math.round(rss / 1048576),
+      heapMb: heap == null ? null : Math.round(heap / 1048576),
+    };
+  };
+
+  // Phase logs, not just a final blob: a run that never returns has to be
+  // diagnosable from the console alone (a stall in `from_pretrained` and a stall
+  // in `generate` are the same silence otherwise).
+  const say = (m: string) => console.log(`[pdf2md bench] ${m}`);
+
+  const t0 = performance.now();
+  say(`start: ${pageList.length} pages, ${maxNewTokens} tok cap, device=${device}`);
+  const pdf = await loadPdfBrowser(deps.pdfjs, deps.data);
+  const tPdf = performance.now();
+  say(`pdf loaded (${pdf.pageCount} pp) in ${((tPdf - t0) / 1000).toFixed(1)}s`);
+
+  /** Heartbeat: every 16th decode step, so a stall is visible within seconds. */
+  let lastStep = { tokens: 0, ms: 0 };
+  const vlm = await createBrowserVlm(deps.transformers, {
+    device,
+    dtype,
+    maxNewTokens,
+    perPageTimeoutMs: 3_600_000, // token-capped run; keep the clock guard out of it
+    onStep: (tokens, ms) => {
+      lastStep = { tokens, ms };
+      if (tokens === 1 || tokens % 16 === 0) say(`  step ${tokens} @ ${(ms / 1000).toFixed(1)}s`);
+    },
+  });
+  const tModel = performance.now();
+  say(`model loaded in ${((tModel - tPdf) / 1000).toFixed(1)}s`);
+
+  const rows: Array<Record<string, unknown>> = [];
+  try {
+    for (const page of pageList) {
+      const tR0 = performance.now();
+      const rendered = await pdf.renderPage(page);
+      const tR1 = performance.now();
+      say(`page ${page}: rendered ${rendered.width}x${rendered.height} in ${((tR1 - tR0) / 1000).toFixed(1)}s`);
+
+      const { docTags, truncated, genTokens, promptTokens } = await vlm.pageToDocTags(
+        rendered.rgba,
+        rendered.width,
+        rendered.height,
+      );
+      const genSec = (performance.now() - tR1) / 1000;
+
+      const row = {
+        page,
+        ...mem(),
+        renderSec: +((tR1 - tR0) / 1000).toFixed(2),
+        genSec: +genSec.toFixed(2),
+        genTokens,
+        promptTokens,
+        tokensPerSec: +(genTokens / genSec).toFixed(2),
+        truncated,
+        docTagsChars: docTags.length,
+        head: docTags.slice(0, 120),
+      };
+      rows.push(row);
+      // Streamed to the driver's console tail: a long run should be watchable,
+      // not a single JSON blob at the end.
+      console.log(
+        `[pdf2md bench] page ${page}: ${genTokens} tok in ${genSec.toFixed(1)}s = ` +
+          `${(genTokens / genSec).toFixed(2)} tok/s (${truncated ?? "EOS"}) ` +
+          `rss ${row.rssMb}MB heap ${row.heapMb}MB`,
+      );
+    }
+  } finally {
+    vlm.dispose();
+    await pdf.destroy();
+  }
+
+  return {
+    device,
+    dtype: vlm.modelLabel,
+    maxNewTokens,
+    pdfLoadSec: +((tPdf - t0) / 1000).toFixed(2),
+    modelLoadSec: +((tModel - tPdf) / 1000).toFixed(2),
+    rows,
+  };
 }
 
 /** Install the shim. Returns the object for convenience. */

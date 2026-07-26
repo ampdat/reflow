@@ -23,6 +23,39 @@ function makeCanvas(w: number, h: number): { canvas: AnyCanvas; ctx: any } {
   return { canvas, ctx: canvas.getContext("2d") };
 }
 
+/**
+ * Run `fn` with `requestAnimationFrame` routed to `setTimeout`.
+ *
+ * pdf.js renders a page in chunks and schedules each continuation with
+ * `window.requestAnimationFrame` (`_scheduleNext`, display intent only).
+ * Chromium never fires rAF while the document is hidden, so in a minimized,
+ * occluded or background Obsidian window `page.render()` simply never resolves:
+ * no error, no CPU, no timeout — the conversion parks forever on whatever page
+ * was in flight when the user switched away. (`RenderTask.onContinue` is not an
+ * escape hatch: the continuation it hands back schedules through rAF too.)
+ *
+ * Nothing here is on screen — we rasterize to an offscreen canvas and read the
+ * pixels straight back — so frame timing buys us nothing, and `setTimeout`
+ * keeps rendering progressing regardless of window state. `cancelAnimationFrame`
+ * is swapped too so pdf.js can still cancel a render mid-flight.
+ */
+async function withTimerScheduling<T>(fn: () => Promise<T>): Promise<T> {
+  const g = globalThis as any;
+  const raf = g.requestAnimationFrame;
+  // Node has no rAF; pdf.js takes its microtask path there and needs no help.
+  if (typeof raf !== "function") return fn();
+  const caf = g.cancelAnimationFrame;
+  g.requestAnimationFrame = (cb: (t: number) => void) =>
+    setTimeout(() => cb(performance.now()), 0) as unknown as number;
+  g.cancelAnimationFrame = (id: number) => clearTimeout(id);
+  try {
+    return await fn();
+  } finally {
+    g.requestAnimationFrame = raf;
+    g.cancelAnimationFrame = caf;
+  }
+}
+
 async function canvasToPng(canvas: AnyCanvas): Promise<Uint8Array> {
   let blob: Blob;
   if ("convertToBlob" in canvas) {
@@ -67,7 +100,7 @@ export async function loadPdfBrowser(pdfjs: any, data: Uint8Array): Promise<Page
       const { canvas, ctx } = makeCanvas(width, height);
       ctx.fillStyle = "white";
       ctx.fillRect(0, 0, width, height);
-      await page.render({ canvasContext: ctx, viewport }).promise;
+      await withTimerScheduling(() => page.render({ canvasContext: ctx, viewport }).promise);
 
       const rgba = ctx.getImageData(0, 0, width, height).data as Uint8ClampedArray;
 

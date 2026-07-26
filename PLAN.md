@@ -215,6 +215,62 @@ the vault. No API keys, no server, nothing uploads.
       With `window.__pdf2md` (`plugin/probe.ts`: `envReport` / `ortSmoke` / `convertPath`) the whole
       build → install → reload → run → read-result loop is scripted. **This is the debugging capability
       the previous session lacked** — every finding above was produced without touching the UI.
+- [x] **RESOLVED — "WebGPU fails after a few pages" was pdf.js + a hidden window, not WebGPU.**
+      Chromium never fires `requestAnimationFrame` while a document is hidden, and pdf.js schedules
+      every continuation chunk of a page raster through it (`_scheduleNext`, display intent only —
+      `useRequestAnimationFrame: !intentPrint`). So with Obsidian minimised, hidden or in the
+      background, `page.render()` **never resolves**: no error, no timeout, no CPU, no GPU. The
+      conversion parks forever on whatever page was in flight when the user switched away.
+    - **Bisected in one hidden renderer** (`plugin/tools/render-stall-probe.js`, each call raced
+      against its own timeout so a stall names itself):
+
+      | call | result |
+      |------|--------|
+      | `getDocument` | ok, 137 ms |
+      | `getPage(1)` | ok, 1 ms |
+      | **`page.render`** | **TIMED OUT after 120 s** |
+      | `getImageData` | ok, 24 ms |
+      | `getTextContent` | ok, 27 ms |
+      | `page.render` with rAF → `setTimeout` | **rendered in 192 ms** |
+
+      Every other pdf.js worker round-trip is healthy; only the rAF-driven render stalls, and
+      shimming the scheduler renders the identical page in 192 ms.
+    - **Fix:** `withTimerScheduling()` in `engine-js/src/browser/pdf.ts` routes `requestAnimationFrame`
+      (and `cancelAnimationFrame`) through timers for the duration of each render. We rasterise to an
+      offscreen canvas and read the pixels straight back, so frame timing buys nothing.
+      `RenderTask.onContinue` is *not* an alternative: the continuation it hands back schedules through
+      rAF too. No-op in Node, which has no rAF and takes pdf.js's microtask path — which is exactly why
+      the CPU parity suite always passed while WebGPU timed out, and why this was not reproducible in
+      Node by construction. transformers.js and the ORT glue reference rAF zero times, so pdf.js was
+      the whole hang surface.
+    - **This explains the whole history:** the 2681 s parity timeout (`.obsidian-test/parity-webgpu.json`)
+      was headless-driven with the window hidden; the complete 15-page WebGPU conversion in
+      `.obsidian-test/vault/full/` succeeded because that window happened to be visible; and "a 2-page
+      run looks fine, a 15-page run does not" was the user watching the first pages and then switching
+      away.
+    - **There is no per-page degradation.** 8 pages of `attention.pdf` on WebGPU, token-capped at 128 so
+      every page does identical work (`__pdf2md.benchPages`, the multi-page twin of `benchPage` — one
+      model instance held across pages, which `benchPage` cannot see):
+      5.55 / 5.56 / 5.88 / 5.77 / 5.75 / 6.02 / 5.62 / 5.76 tok/s, RSS 3281→3302 MB. Flat within ±4%,
+      RSS within 2%. The Node CPU control over the same 8 pages is flat too. The "cost per page climbs
+      steeply" note in `core/convert.ts` was this stall misread — a page that never finishes reads as an
+      infinitely expensive one — and has been corrected in place.
+    - **Cost structure** (from the new per-decode-step heartbeat, `BrowserVlmOptions.onStep`): step 1 at
+      ~15 s, steps 16→128 in ~5 s. **Prefill ~15 s/page dominates; decode runs ~24 tok/s.** A 128-token
+      cap therefore *understates* throughput badly — the headline 5.8 tok/s is mostly amortised prefill.
+      Prefill, not decode, is where WebGPU optimisation should go.
+    - **Open, and separate from the hang: today's WebGPU throughput is ~5.6 tok/s, not the 12.37 tok/s
+      recorded above** — and at a 128-token cap that gap is *entirely* prefill (128 tok at 12.37 tok/s
+      is 10.3 s, less than the ~15 s prefill measured here, so the earlier run must have prefilled far
+      faster). Machine idle both times, same stack. Not visibility: a repeat with the window brought to
+      the front measured 4.97-5.63 tok/s, though macOS re-hid the window mid-run
+      (`Page.bringToFront` and AppleScript both failed to hold it visible), so visible-vs-hidden is
+      strictly speaking still unmeasured. Suspect shader/pipeline cache state (`DawnWebGPUCache`) or a
+      dtype difference in the vision encoder. Worth one bisect before trusting either number.
+    - **Lesson (companion to the idle-machine one):** an async pipeline needs a heartbeat, not just
+      totals. A stalled `generate()` and a slow one are the same silence from outside, and the wall-clock
+      guard reported "slow page" for what was really "never scheduled". `onStep` + phase logs turned a
+      45-minute mystery into a 137 ms/1 ms/timeout table.
 - [x] **RESOLVED — the throughput scare was measurement error.** Everything in the struck-through block
       below was measured while an unrelated AI training run was saturating the machine (CPU + GPU
       contention and thermal throttling). Re-measured on 2026-07-25 with the machine settled (load < 2,
@@ -336,6 +392,33 @@ without the per-platform binaries. Keep it in the back pocket if a machine ever 
       took 439 s on a healthy machine took >35 min. Thrashing, not compute.
     - **Still to measure:** the same peak/accumulation figures on the WebGPU path (renderer + GPU
       process RSS), and whether peak scales with page count or plateaus.
+- [x] **Conversion progress UI + cancel.** The old UI showed a Notice that ended on "Downloading model
+      … 100%" and then said nothing for the rest of the run, because `assembleDocument` emitted nothing
+      between start and finish — no UI could have shown progress. Now: `ConvertProgress` ticks per page
+      (`render`/`generate`/`page-done`), an abort signal checked between pages *and* between decode steps
+      (`createGuard`), and a `ConversionModal` with progress bar, page counter, live token count, elapsed,
+      ETA and s/page.
+    - **Only the Cancel button cancels.** Obsidian closed a modal by itself 32 s into a test run;
+      under "any close = cancel" that would have silently discarded the work. Dismissing detaches instead.
+    - **Detach/reattach**: progress lives in a `ConversionState` both views read, so the dialog can be
+      closed and reopened with its clock intact (verified: reopened at 465 tokens / 29 s, continuing).
+      The fallback is a **status bar item**, not a Notice — Obsidian Notices dismiss themselves on click,
+      which ate the "click to reopen" affordance and left no way back. Command palette entry too.
+    - **The bar interpolates within a page** (`plugin/tools/bar-probe.js` samples the `<progress>`
+      element itself). Two earlier shapes both failed in the same way — looking stuck: updating only at
+      page boundaries meant two steps on a 2-page document, and a linear ramp with a hard cap froze for
+      **51 s** when a page ran 103 s against the 45 s guess. Now it runs linearly to 80% of the page's
+      share by the expected time, then asymptotically (still moving at 3× the estimate), with a
+      high-water gate so it can never retreat. Result: **41 distinct values in 41 samples, monotonic,
+      no freeze**, vs 43-of-60 with a 51 s stall before. Estimate is the running per-page average;
+      elapsed time, not tokens, because tokens sit at 0 through the ~15 s prefill.
+    - **Verified live** (`plugin/tools/modal-probe.js`, 2 pages of `bert.pdf`): dialog ticks mid-page
+      (211→392 tokens between samples), Escape detaches without cancelling, another note opens in 114 ms
+      while converting, status-bar click restores the dialog, and Cancel settles in **503 ms** mid-page.
+    - **Main-thread cost, measured:** event-loop lag during conversion was **877 ms** in one run and
+      **4.5 ms** in another. Both are real: prefill is one long block, decode is many short ones, so
+      responsiveness swings within a page. Obsidian stays usable but can feel sluggish — the fix is the
+      worker migration below, not the dialog.
 - [ ] Model download on first enable with disclosure + checksums (Smart Connections precedent).
       Inference in a worker; persist weights via IndexedDB/OPFS (Cache API unreliable in the harness pane).
 - [ ] Vault craft: YAML frontmatter (title/authors/DOI/citekey), relative image links, optional
@@ -411,3 +494,5 @@ comes. Nothing before that gates on mobile.
 | 2026-07-24 | M3 | **Gate 3 ✅** | **Fixture parity achieved.** All 4 fixtures × both engines pass all 7 ground-truth checks; numeric cells intact; vae math 35 vs 31. Degenerate-generation guard added (`3ead976`), fired in production on vae p11. Gaps for later: figure over-detection, OTSL merged cells. → M4. |
 | 2026-07-24 | M4 | — | Portable engine refactor (`783dff5`): `core/` (assembleDocument, no I/O) + `browser/` adapters (DI transformers/pdf.js); web harness runs the real core. Obsidian plugin scaffolded (`604a373`, `plugin/`) — file-menu convert → vault package on WebGPU; bundles clean. Remaining Gate 4: live in-Obsidian validation + IndexedDB weight cache. |
 | 2026-07-24 | M4 | — | Plugin install workflow (`ab55dd2`: dist/ + install.mjs). Live-in-Obsidian debugging: fixed transformers backend selection (WebGPU now chosen, `c583fab`); **blocked** on onnxruntime-web threaded-wasm doing `import('worker_threads')` in the renderer (emscripten Node mis-detection). Build-time glue patch attempted, didn't fire — WIP. Diagnosis + candidate fixes logged in M4. |
+| 2026-07-25 | M4 | — | **"WebGPU fails after a few pages" solved — it was never WebGPU.** pdf.js schedules page-raster continuations through `requestAnimationFrame`, which Chromium never fires in a hidden document, so `page.render()` parked forever whenever Obsidian was minimised/backgrounded (0% CPU, no error). Bisected in a hidden renderer: `getDocument` 137 ms, `getPage` 1 ms, **`page.render` timed out at 120 s**, same page renders in **192 ms** with rAF shimmed. Fixed by `withTimerScheduling()` (`browser/pdf.ts`); no-op in Node, which is why the CPU suite always passed and why this was unreproducible there by construction. Also disproved the "cost per page climbs steeply on WebGPU" note: token-capped, 8 pages are flat within ±4% (RSS within 2%), Node CPU likewise. Prefill (~15 s/page) dominates; decode ~24 tok/s. |
+| 2026-07-25 | M4 | — | **Progress UI + cancel.** `assembleDocument` emitted nothing between start and finish, so the plugin's Notice froze on "Downloading model … 100%" for the whole run — no UI could have shown progress. Added `ConvertProgress` ticks, an abort signal honoured between pages *and* between decode steps, and a progress dialog (page, live token count, elapsed, ETA, cancel) that detaches to the status bar so the vault stays readable. Cancel settles in ~500 ms mid-page. Bar interpolates within a page on a running per-page average with an asymptotic tail — a linear-with-cap version froze for 51 s when a page overran its estimate. Verified live: 41 distinct bar values in 41 samples, monotonic, no freeze. |

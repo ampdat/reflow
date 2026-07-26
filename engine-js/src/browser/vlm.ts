@@ -29,6 +29,16 @@ export interface BrowserVlmOptions {
   prompt?: string;
   /** transformers.js download/compile progress. */
   progressCallback?: (p: unknown) => void;
+  /**
+   * Per-token heartbeat: `(tokensSoFar, msSinceGenerationStart)`.
+   *
+   * Diagnostic seam. A stalled WebGPU run and a merely slow one look identical
+   * from outside `generate()` — both are just a promise that hasn't settled —
+   * so the bench probes need a signal that ticks per decode step.
+   */
+  onStep?: (tokens: number, ms: number) => void;
+  /** Abort in-flight generation; checked between decode steps by the guard. */
+  signal?: { aborted: boolean };
 }
 
 export async function createBrowserVlm(transformers: any, opts: BrowserVlmOptions = {}): Promise<Vlm> {
@@ -58,11 +68,27 @@ export async function createBrowserVlm(transformers: any, opts: BrowserVlmOption
       const text = processor.apply_chat_template(messages, { add_generation_prompt: true });
       const inputs = await processor(text, image);
 
-      const guard = createGuard(StoppingCriteria, perPageTimeoutMs);
+      const guard = createGuard(StoppingCriteria, perPageTimeoutMs, 16, opts.signal);
+      const criteria: unknown[] = [guard];
+      if (opts.onStep) {
+        // A criteria that never stops — just a per-step callback, since
+        // transformers.js has no other hook that fires once per decode step.
+        const onStep = opts.onStep;
+        const tGen = performance.now();
+        let steps = 0;
+        criteria.push(
+          new (class extends StoppingCriteria {
+            _call(input_ids: number[][]): boolean[] {
+              onStep(++steps, Math.round(performance.now() - tGen));
+              return input_ids.map(() => false);
+            }
+          })(),
+        );
+      }
       const generated = await model.generate({
         ...inputs,
         max_new_tokens: maxNewTokens,
-        stopping_criteria: [guard],
+        stopping_criteria: criteria,
       });
 
       const promptLen = inputs.input_ids.dims.at(-1) as number;

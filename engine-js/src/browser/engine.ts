@@ -5,7 +5,7 @@
  * host to write to disk or vault.
  */
 
-import { assembleDocument } from "../core/convert.js";
+import { assembleDocument, type AssembleOptions } from "../core/convert.js";
 import type { AssembledDocument } from "../core/types.js";
 import { loadPdfBrowser } from "./pdf.js";
 import { createBrowserVlm, type BrowserVlmOptions } from "./vlm.js";
@@ -23,6 +23,13 @@ export interface BrowserConvertOptions {
   titleFallback?: string;
   created?: string;
   vlm?: BrowserVlmOptions;
+  /** Per-page progress for a host UI (see `ConvertProgress`). */
+  onProgress?: AssembleOptions["onProgress"];
+  /**
+   * Cancellation. Forwarded to both the page loop and the VLM, so a cancel takes
+   * effect mid-page rather than only at the next page boundary.
+   */
+  signal?: { aborted: boolean };
 }
 
 export async function convertPdfBrowser(
@@ -30,13 +37,15 @@ export async function convertPdfBrowser(
   opts: BrowserConvertOptions = {},
 ): Promise<AssembledDocument> {
   const pages = await loadPdfBrowser(deps.pdfjs, deps.data);
-  const vlm = await createBrowserVlm(deps.transformers, opts.vlm);
+  const vlm = await createBrowserVlm(deps.transformers, { signal: opts.signal, ...opts.vlm });
   try {
     return await assembleDocument(pages, vlm, {
       maxPages: opts.maxPages,
       sourceLabel: opts.sourceLabel ?? "pdf",
       titleFallback: opts.titleFallback ?? "document",
       created: opts.created,
+      onProgress: opts.onProgress,
+      signal: opts.signal,
     });
   } finally {
     vlm.dispose();
