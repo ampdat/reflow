@@ -17,7 +17,7 @@ npm install                 # once
 npm run deploy              # build → dist/, then install into the vault
 ```
 
-- `npm run build` — bundle `main.ts` (+ engine core, transformers.js, pdf.js) → `dist/{main.js,manifest.json}`.
+- `npm run build` — bundle `main.ts` (+ engine core, transformers.js, pdf.js) → `dist/{main.js,worker.js,manifest.json}`.
 - `npm run install:vault` — copy `dist/` into the vault's `.obsidian/plugins/pdf-to-md/` **without rebuilding**.
 - `npm run deploy` — both.
 - `npm run dev` — esbuild watch (for live iteration).
@@ -39,6 +39,48 @@ or if it's already enabled, **reload** (Cmd+R) / toggle it off·on to pick up th
 - On first convert it **downloads model weights (~1 GB, fp32)** from the HF hub with
   a progress notice, then caches them in the renderer. Later converts skip the download.
 - pdf.js worker + ORT wasm are fetched from a CDN on first use.
+
+## Conversion runs in a worker
+
+The engine runs in a dedicated worker ([`worker.ts`](worker.ts), bundled to
+`dist/worker.js` and started from a blob URL by [`worker-host.ts`](worker-host.ts)),
+not on the renderer's main thread. Measured on 2 pages of `attention.pdf`, same
+build, only this setting changed:
+
+| | worker | main thread |
+|---|---|---|
+| main-thread lag (p95) | **1.1 ms** | 17 ms |
+| main-thread lag (max) | 1.8–72 ms | **533 ms** |
+| stalls over 100 ms | **0** | 8 |
+| throughput | 16.6 tok/s | 17.4 tok/s |
+| renderer RSS after 3 conversions | 266 → **1019 MB** | 267 → **2885 MB** |
+
+So it costs ~5% throughput and buys a UI that never stutters, plus ~3× less
+resident memory: the worker is **single-use** and terminated after every
+conversion, which is the only reliable way to get back what ORT's `dispose()`
+leaves behind. Turn it off with the *Convert in a background thread* setting —
+that is also the control arm for reproducing the table above.
+
+### It changes how pages are rasterized
+
+A worker has no `document`, so [`browser/pdf.ts`](../engine-js/src/browser/pdf.ts)
+supplies an OffscreenCanvas factory, a no-op filter factory (pdf.js's builds
+`<svg><filter>` elements), and `disableFontFace` — matching what pdf.js's own Node
+build does, which is the configuration the fixture suite validated.
+
+`disableFontFace` has a trap worth knowing about. It makes pdf.js rasterize the
+standard 14 fonts from their own outlines instead of handing them to the platform
+font stack, so it needs `standardFontDataUrl`. Without it pdf.js does not fail —
+it warns once per glyph (`getPathGenerator - ignoring character`) and rasterizes
+the page **with holes in the text**, which reaches the VLM as a page that simply
+says less. `loadPdfBrowser` now throws rather than render without it, and the
+pinned URLs live in [`pdfjs-cdn.ts`](pdfjs-cdn.ts).
+
+Two smaller notes from wiring this up: `requestAnimationFrame` *does* exist in
+Obsidian's worker global and does fire, so pdf.js's rAF scheduling shim stays on
+there; and pdf.js reports *"Setting up fake worker"* inside the worker (it can't
+spawn its nested parsing worker), so PDF parsing shares the conversion thread —
+still off the main thread, just not parallel with inference.
 
 ## Running ONNX inside Obsidian: the two Node-detection traps
 
@@ -113,6 +155,23 @@ usable from the devtools console too:
   `strategy: "baseline"` deliberately restores the broken config to reproduce the
   bug on demand.
 - `convertPath("file.pdf")` — the real conversion, returning a summary object.
+- `setUseWorker(bool)` / `lastRunMode()` — switch between the worker and
+  main-thread paths and confirm which one actually ran.
+
+Probes built for specific questions, run with `run-file`:
+
+- `tools/worker-probe.js` — one conversion while sampling **main-thread** event-loop
+  lag. Totals can't distinguish a blocked UI from a busy one; this can.
+- `tools/memory-probe.js` — three conversions in one session, RSS after each. The
+  memory question is about accumulation, which a single conversion cannot show.
+- `tools/raster-diff-probe.js` — renders the same pages in the worker and on the
+  main thread and compares pixels. The worker's `document`-less pdf.js config is
+  the one way it can affect output *quality*; comparing DocTags instead would
+  confound that with decoding noise.
+
+Note when writing probes: pdf.js **transfers** the input buffer to its worker, so
+a `Uint8Array` fed to two consumers arrives detached and empty at the second —
+and pdf.js answers that by hanging, not throwing. Pass a fresh `.slice()` each time.
 
 A full loop is `npm run build && npm run install:vault && node tools/obsidian-drive.mjs reload`,
 then an `eval`.
@@ -129,3 +188,6 @@ then an `eval`.
 
 - **Output folder** — vault folder for packages (empty = alongside the PDF).
 - **Max pages** — 0 = all; set small for a quick test.
+- **Per-page time limit** — generation for a page is cut off after this long and the
+  page is flagged incomplete. Raise it for dense pages or a slower GPU.
+- **Convert in a background thread** — on by default; see above.

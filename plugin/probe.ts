@@ -322,7 +322,10 @@ export async function benchPages(
 export function installProbe(extra: Record<string, unknown> = {}) {
   // Expose ORT itself so ad-hoc probes (tools/webnn-probe.js) can try execution
   // provider configurations without a plugin rebuild.
-  const api = { envReport, ortSmoke, ort, ...extra };
+  // loadPdfBrowser too: the worker renders without a `document`, and the only
+  // way to check that costs nothing is to render the same pages both ways
+  // (tools/raster-diff-probe.js) — which needs the adapter on this side.
+  const api = { envReport, ortSmoke, ort, loadPdfBrowser, ...extra };
   (window as any).__pdf2md = api;
   return api;
 }

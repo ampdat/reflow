@@ -254,6 +254,27 @@ renderer environment. `attention.pdf` page 1:
 
 ---
 
+## 4c. Model alternative proposed: nougat-small — spike sketched, not yet run (2026-07-25)
+
+`facebook/nougat-small` (247 M, **cc-by-4.0**, Swin encoder + 4-layer mBART decoder) as a cheaper
+VLM than granite-docling. It runs under the frameworks we already have —
+[`Xenova/nougat-small`](https://huggingface.co/Xenova/nougat-small) is a published ONNX export and
+transformers.js already ships `NougatImageProcessor`/`NougatTokenizer`/`VisionEncoderDecoderModel` —
+so the Node/CPU and WebGPU harnesses in §4b apply unchanged.
+
+- **No size win** (~995 MB fp32, same class as granite's ~1 GB); the hypothesis is *decode shape*:
+  4 decoder layers vs 30, and cross-attention instead of Idefics3 image tokens in the decoder
+  context. Estimated 2–4× on decode, which is what the spike measures.
+- **Structural cost:** no bboxes at all ⇒ no figure crops and no page provenance; tables come back
+  as LaTeX `tabular`; arXiv-only training distribution flatters our fixture suite.
+- **LiteRT.js for nougat: still no** — zero `.tflite` nougat exports exist and LiteRT.js is
+  browser-only, so it can't host the Node benchmark harness. §4a's reasoning is unchanged.
+
+Full sketch, phase gates and kill criteria: **[spike-nougat.md](spike-nougat.md)**. Results land
+here as §4d.
+
+---
+
 ## 4a. Runtime alternative evaluated: LiteRT.js (Google, Jul 2026) — verdict: stick with ONNX, watch
 
 Google announced [LiteRT.js](https://developers.googleblog.com/litertjs-googles-high-performance-web-ai-inference/)

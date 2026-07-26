@@ -380,18 +380,31 @@ without the per-platform binaries. Keep it in the back pocket if a machine ever 
     - Pages that tripped the degenerate-generation guard and were still good enough to pass:
       attention p4/p6/p9 and bert p16 (repetition), vae p2 and ioannidis p6 (timeout). Merged-cell
       table warnings on attention, bert, ioannidis — the known OTSL gap.
-- [!] **Memory is the binding constraint, not CPU.** Machine-requirements data from the CPU run:
+- [x] **Memory is the binding constraint, not CPU — and on WebGPU it plateaus.** Machine-requirements
+      data from the CPU run:
     - **Peak RSS during a single 15-page conversion: ~9.3 GB** (sampled with `ps` while running).
       Settled RSS *after* the same conversion: ~2.5 GB — so peak, not steady state, is what sizes the box.
     - **RSS accumulates across conversions in one process:** 2528 → 5156 → 7313 MB over successive
       fixtures, despite `convertPdf` calling `vlm.dispose()` + `pdf.destroy()`. ORT's native
-      allocations are not fully returned. **This matters for the plugin**: a user converting several
-      PDFs in one Obsidian session would watch the renderer grow until it dies. Needs a fix (dispose
-      audit, or convert in a disposable worker) before shipping.
+      allocations are not fully returned.
     - On this 16 GB M4 the second run drove swap to 7.5 GB and load to 18.5, and a conversion that
       took 439 s on a healthy machine took >35 min. Thrashing, not compute.
-    - **Still to measure:** the same peak/accumulation figures on the WebGPU path (renderer + GPU
-      process RSS), and whether peak scales with page count or plateaus.
+    - **Measured on WebGPU (2026-07-25), and it does not reproduce there** — `tools/memory-probe.js`,
+      three consecutive 2-page conversions in one Obsidian session, renderer RSS after each:
+
+      | | run 1 | run 2 | run 3 |
+      |---|---|---|---|
+      | worker | 266 → 882 MB | → 1006 MB | → **1019 MB** |
+      | main thread | 267 → 2780 MB | → 2938 MB | → **2885 MB** |
+
+      Both **plateau after the first conversion** rather than climbing linearly, so the "renderer
+      grows until it dies" risk was carried over from the CPU measurement and is not a property of
+      the shipping path. The runaway figure above stands, but as a fact about `onnxruntime-node`.
+    - **The worker still cuts the settled footprint ~3×** (1.0 GB vs 2.9 GB), because terminating the
+      thread returns what ORT's `dispose()` does not. That is the reason it is single-use.
+    - **Still to measure:** peak *during* conversion on WebGPU at 15 pages (the CPU figure was
+      9.3 GB; a 15-page worker run was observed at ~3.1 GB renderer RSS mid-conversion, unsampled),
+      and whether peak scales with page count.
 - [x] **Conversion progress UI + cancel.** The old UI showed a Notice that ended on "Downloading model
       … 100%" and then said nothing for the rest of the run, because `assembleDocument` emitted nothing
       between start and finish — no UI could have shown progress. Now: `ConvertProgress` ticks per page
@@ -419,11 +432,71 @@ without the per-platform binaries. Keep it in the back pocket if a machine ever 
       **4.5 ms** in another. Both are real: prefill is one long block, decode is many short ones, so
       responsiveness swings within a page. Obsidian stays usable but can feel sluggish — the fix is the
       worker migration below, not the dialog.
-- [ ] Model download on first enable with disclosure + checksums (Smart Connections precedent).
-      Inference in a worker; persist weights via IndexedDB/OPFS (Cache API unreliable in the harness pane).
+- [x] **Inference moved into a worker.** `plugin/worker.ts` (own esbuild bundle → `dist/worker.js`,
+      started from a blob URL by `worker-host.ts`) runs the *same* `engine-js` core off the
+      renderer's main thread. The worker is **single-use**: terminated after every conversion, which
+      is the only reliable way to reclaim what ORT's `dispose()` leaves behind. A `Convert in a
+      background thread` setting turns it off — that is the control arm, not a fallback.
+    - **A/B on the same build**, 2 pages of `attention.pdf`, `tools/worker-probe.js` sampling
+      event-loop lag on the main thread (a 50 ms interval whose observed period *is* the lag —
+      totals cannot tell a blocked UI from a busy one, which is why the earlier "877 ms in one run,
+      4.5 ms in another" reading was ambiguous):
+
+      | | worker | main thread |
+      |---|---|---|
+      | main-thread lag, p95 | **1.1 ms** | 17 ms |
+      | main-thread lag, max | **1.8-72 ms** | **533 ms** |
+      | stalls > 100 ms | **0** | 8 |
+      | throughput | 16.6 tok/s | 17.4 tok/s |
+
+      ~5% of throughput for a UI that never stutters, plus the memory result above. (Two worker
+      runs, before and after the font fix below, gave 1.8 ms and 72 ms for the max — a single
+      blip in one of them. p95 and the count of >100 ms stalls were stable across both, so those
+      are the figures to trust; a lone max is one sample.)
+    - **It changes how pages are rasterized, and that nearly shipped a silent quality regression.**
+      A worker has no `document`, so `browser/pdf.ts` now supplies an OffscreenCanvas factory, a
+      no-op filter factory, and `disableFontFace` — pdf.js's own Node configuration, i.e. the one
+      the fixture suite validated. But `disableFontFace` makes pdf.js rasterize the standard 14
+      fonts from their outlines, so it needs `standardFontDataUrl`; **without it pdf.js does not
+      fail, it warns once per glyph and rasterizes the page with holes in the text** (25 dropped
+      characters on page 1 of `attention.pdf`). Downstream that is indistinguishable from a sparse
+      page: the first worker runs quietly returned 7172 chars against the main thread's 7207.
+      `loadPdfBrowser` now **throws** rather than render without it (working rule 5).
+    - Supplying those URLs then tripped a second trap: pdf.js *computes* `useWorkerFetch` from
+      `isValidFetchUrl(cMapUrl, document.baseURI)` — a bare `document` reference that throws
+      ReferenceError off-main-thread, and only once both URLs are set, so it hides behind the very
+      fix it accompanies. Set explicitly.
+    - **Two corrections to assumptions made here.** `requestAnimationFrame` *does* exist on
+      Obsidian's worker global and *does* fire, so the pdf.js rAF shim stays on in workers rather
+      than being redundant there. And pdf.js reports "Setting up fake worker" inside the worker — it
+      cannot spawn its nested parsing worker — so parsing shares the conversion thread; still off
+      the main thread, just not parallel with inference. Neither is a correctness problem; both were
+      guesses that measurement reversed.
+    - Probe note worth keeping: pdf.js **transfers** the input buffer to its worker, so a
+      `Uint8Array` handed to two consumers reaches the second detached and empty — and pdf.js
+      answers that by *hanging*, not throwing. Two probe "timeouts" were this.
+    - **Quality re-verified on the worker path, not assumed:** `attention` end-to-end through
+      `tools/fixture-parity.mjs` (15 pp, real Obsidian, judged by the same shared checks as the
+      CPU suite) — **8/8, including `required_table_cells`**, and the warning set is identical to
+      the recorded CPU run (repetition guard on p4/p6/p9 + the known merged-cell warning). 31091
+      chars, 7 figures. Rasters still differ from the main thread by ~5-7% of pixels at mean 3
+      luma levels (`tools/raster-diff-probe.js`) — antialiasing from outline vs platform-font
+      rendering, not missing content. The other three fixtures have not been re-run.
+    - **Cancel settles in 74 ms** mid-page (was ~500 ms on the main thread — the message lands
+      immediately when the receiving thread isn't the blocked one).
+- [ ] Model download on first enable with disclosure + checksums (Smart Connections precedent);
+      persist weights via IndexedDB/OPFS (Cache API unreliable in the harness pane).
 - [ ] Vault craft: YAML frontmatter (title/authors/DOI/citekey), relative image links, optional
       provenance links to PDF pages (`[[paper.pdf#page=N]]`).
 - [ ] Fix engine gaps the plugin inherits: figure over-detection, OTSL merged-cell spans (M3 carry-over).
+- [ ] **Engine alternative sketched, not run: `facebook/nougat-small`** (247M, cc-by-4.0, Swin +
+      4-layer mBART) as a cheaper VLM than granite-docling. Loads under the frameworks we already
+      have. The hypothesis is decode *shape*, not size — 4 decoder layers vs 30, cross-attention
+      instead of Idefics3 image tokens in the decoder context — estimated 2-4× on decode; there is
+      no size win (~995 MB fp32). Structural cost is real: **no bboxes at all**, so no figure crops
+      and no page provenance, and tables come back as LaTeX `tabular`. Phased plan with kill
+      criteria (stop below 2×) and the parser seam it needs in `assembleDocument`:
+      [docs/spike-nougat.md](./docs/spike-nougat.md). Results land as perf-doc §4d.
 
 **Gate 4:** fresh Obsidian install → plugin → converted paper in vault in under 2 minutes, offline
 after model cache.
@@ -495,4 +568,6 @@ comes. Nothing before that gates on mobile.
 | 2026-07-24 | M4 | — | Portable engine refactor (`783dff5`): `core/` (assembleDocument, no I/O) + `browser/` adapters (DI transformers/pdf.js); web harness runs the real core. Obsidian plugin scaffolded (`604a373`, `plugin/`) — file-menu convert → vault package on WebGPU; bundles clean. Remaining Gate 4: live in-Obsidian validation + IndexedDB weight cache. |
 | 2026-07-24 | M4 | — | Plugin install workflow (`ab55dd2`: dist/ + install.mjs). Live-in-Obsidian debugging: fixed transformers backend selection (WebGPU now chosen, `c583fab`); **blocked** on onnxruntime-web threaded-wasm doing `import('worker_threads')` in the renderer (emscripten Node mis-detection). Build-time glue patch attempted, didn't fire — WIP. Diagnosis + candidate fixes logged in M4. |
 | 2026-07-25 | M4 | — | **"WebGPU fails after a few pages" solved — it was never WebGPU.** pdf.js schedules page-raster continuations through `requestAnimationFrame`, which Chromium never fires in a hidden document, so `page.render()` parked forever whenever Obsidian was minimised/backgrounded (0% CPU, no error). Bisected in a hidden renderer: `getDocument` 137 ms, `getPage` 1 ms, **`page.render` timed out at 120 s**, same page renders in **192 ms** with rAF shimmed. Fixed by `withTimerScheduling()` (`browser/pdf.ts`); no-op in Node, which is why the CPU suite always passed and why this was unreproducible there by construction. Also disproved the "cost per page climbs steeply on WebGPU" note: token-capped, 8 pages are flat within ±4% (RSS within 2%), Node CPU likewise. Prefill (~15 s/page) dominates; decode ~24 tok/s. |
+| 2026-07-25 | — | — | **Nougat spike sketched** (`docs/spike-nougat.md`, perf doc §4c): `facebook/nougat-small` as a cheaper VLM. Proposal only — nothing measured yet beyond published configs and the HF export inventory. Phase gates and kill criteria written down first, so a negative result is publishable the way §4a's LiteRT verdict was. |
+| 2026-07-25 | M4 | — | **Inference moved into a worker** (`plugin/worker.ts`, own bundle, blob-URL start, single-use so ORT's leftovers die with the thread). Main-thread lag during conversion drops from p95 17 ms / 8 stalls >100 ms to **p95 1.1 ms / zero**, for ~5% of throughput; settled renderer RSS across three conversions ends at 1.0 GB instead of 2.9 GB; cancel settles in 74 ms instead of ~500 ms. Also disproved the accumulation blocker: on WebGPU memory **plateaus** after the first conversion in both modes — the 2528→5156→7313 MB runaway was the Node/CPU path. Nearly shipped a silent regression on the way: rendering without a `document` needs `disableFontFace`, which makes pdf.js rasterize the standard 14 fonts itself and **drop glyphs one by one** without `standardFontDataUrl` — a page with holes in the text, no error, only slightly short output (7172 vs 7207 chars). `loadPdfBrowser` now throws instead. `attention` re-verified end-to-end on the worker path: **8/8 checks**, numeric table cells intact, same guard-firing pages as the CPU oracle. |
 | 2026-07-25 | M4 | — | **Progress UI + cancel.** `assembleDocument` emitted nothing between start and finish, so the plugin's Notice froze on "Downloading model … 100%" for the whole run — no UI could have shown progress. Added `ConvertProgress` ticks, an abort signal honoured between pages *and* between decode steps, and a progress dialog (page, live token count, elapsed, ETA, cancel) that detaches to the status bar so the vault stays readable. Cancel settles in ~500 ms mid-page. Bar interpolates within a page on a running per-page average with an asymptotic tail — a linear-with-cap version froze for 51 s when a page overran its estimate. Verified live: 41 distinct bar values in 41 samples, monotonic, no freeze. |

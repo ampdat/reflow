@@ -7,7 +7,7 @@
 
 import { assembleDocument, type AssembleOptions } from "../core/convert.js";
 import type { AssembledDocument } from "../core/types.js";
-import { loadPdfBrowser } from "./pdf.js";
+import { loadPdfBrowser, type LoadPdfBrowserOptions } from "./pdf.js";
 import { createBrowserVlm, type BrowserVlmOptions } from "./vlm.js";
 
 export interface BrowserDeps {
@@ -23,6 +23,8 @@ export interface BrowserConvertOptions {
   titleFallback?: string;
   created?: string;
   vlm?: BrowserVlmOptions;
+  /** pdf.js sidecar data locations; `standardFontDataUrl` is mandatory in a worker. */
+  pdf?: LoadPdfBrowserOptions;
   /** Per-page progress for a host UI (see `ConvertProgress`). */
   onProgress?: AssembleOptions["onProgress"];
   /**
@@ -36,7 +38,7 @@ export async function convertPdfBrowser(
   deps: BrowserDeps,
   opts: BrowserConvertOptions = {},
 ): Promise<AssembledDocument> {
-  const pages = await loadPdfBrowser(deps.pdfjs, deps.data);
+  const pages = await loadPdfBrowser(deps.pdfjs, deps.data, opts.pdf ?? {});
   const vlm = await createBrowserVlm(deps.transformers, { signal: opts.signal, ...opts.vlm });
   try {
     return await assembleDocument(pages, vlm, {
@@ -53,7 +55,7 @@ export async function convertPdfBrowser(
   }
 }
 
-export { loadPdfBrowser } from "./pdf.js";
+export { loadPdfBrowser, type LoadPdfBrowserOptions } from "./pdf.js";
 export { createBrowserVlm, WEBGPU_DTYPE } from "./vlm.js";
 export { sanitizeDirname } from "../frontmatter.js";
 export type { AssembledDocument, AssembledFigure } from "../core/types.js";

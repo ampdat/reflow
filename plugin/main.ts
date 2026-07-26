@@ -8,6 +8,10 @@
  * The whole conversion pipeline is the shared, fixture-validated core
  * (../engine-js/src/browser/engine.ts); this file is just the Obsidian shell:
  * menu/command wiring, vault I/O, and injecting transformers.js + pdf.js.
+ *
+ * By default the engine runs in a worker (plugin/worker.ts) so inference cannot
+ * block the UI and so ORT's memory goes away with the thread; the in-renderer
+ * path below is kept as the fallback and as the A/B control.
  */
 
 import {
@@ -25,9 +29,11 @@ import {
 import * as transformers from "@huggingface/transformers";
 import * as pdfjs from "pdfjs-dist";
 
+import type { AssembledDocument } from "../engine-js/src/core/types.js";
 import { convertPdfBrowser, sanitizeDirname } from "../engine-js/src/browser/engine.js";
 import { configureOrt } from "./ort-env.js";
 import { benchPage, benchPages, installProbe, setOrtWasmPaths } from "./probe.js";
+import { convertPdfInWorker, workerBlobUrl, type WorkerConvertOptions } from "./worker-host.js";
 
 // The esbuild banner renamed process.release.name so transformers.js (loaded
 // above) would select its onnxruntime-web + WebGPU backend instead of the
@@ -70,9 +76,21 @@ interface Settings {
    * to be tunable rather than a fixed engine constant.
    */
   perPageTimeoutSec: number;
+  /**
+   * Run the engine in a worker (default) instead of on the renderer's main
+   * thread. Exposed as a setting because it is also the control arm: the
+   * responsiveness and memory claims for the worker are only meaningful next to
+   * a measurement of the same build without it.
+   */
+  useWorker: boolean;
 }
 
-const DEFAULT_SETTINGS: Settings = { outputFolder: "", maxPages: 0, perPageTimeoutSec: 300 };
+const DEFAULT_SETTINGS: Settings = {
+  outputFolder: "",
+  maxPages: 0,
+  perPageTimeoutSec: 300,
+  useWorker: true,
+};
 
 /**
  * Live state of one conversion, owned by the conversion rather than by any view.
@@ -282,6 +300,10 @@ export default class PdfToMdPlugin extends Plugin {
    * even when the status bar is hidden.
    */
   showProgress: (() => void) | null = null;
+  /** Blob URL for dist/worker.js — resolved once, reused by every conversion. */
+  private workerUrl: Promise<string> | null = null;
+  /** How the last conversion actually ran, for the probe and the log. */
+  lastRunMode: "worker" | "renderer" | null = null;
 
   async onload(): Promise<void> {
     const g = globalThis as any;
@@ -310,6 +332,13 @@ export default class PdfToMdPlugin extends Plugin {
         return this.convert(f);
       },
       settings: () => this.settings,
+      /** Flip the worker on/off from a probe without a settings-tab round trip. */
+      setUseWorker: async (on: boolean) => {
+        this.settings.useWorker = on;
+        await this.saveSettings();
+        return this.settings.useWorker;
+      },
+      lastRunMode: () => this.lastRunMode,
       ortConfig,
       benchPage: async (path: string, opts?: Record<string, unknown>) => {
         const f = this.app.vault.getAbstractFileByPath(path);
@@ -410,36 +439,25 @@ export default class PdfToMdPlugin extends Plugin {
     const started = performance.now();
     try {
       const data = new Uint8Array(await this.app.vault.readBinary(file));
-
-      const doc = await convertPdfBrowser(
-        { transformers, pdfjs, data },
-        {
-          maxPages: this.settings.maxPages || undefined,
-          sourceLabel: file.path,
-          titleFallback: file.basename,
-          signal: controller.signal,
-          onProgress: (p) => {
-            if (p.phase === "page-done") state.pageDone(p.page, p.pageCount, p.ms);
-            else state.setPage(p.phase, p.page, p.pageCount);
-            status?.setText(state.statusBar());
-          },
-          vlm: {
-            perPageTimeoutMs: Math.max(1, this.settings.perPageTimeoutSec) * 1000,
-            // Per-token, so the dialog can prove it is alive mid-page rather
-            // than sitting on one line for the ~30-60 s a page takes.
-            onStep: (tokens) => {
-              state.tokens = tokens;
-            },
-            progressCallback: (p: any) => {
-              if (p?.status === "progress" && p.file?.includes("decoder")) {
-                state.setModelProgress(p.progress || 0);
-              } else if (p?.status === "ready") {
-                state.setModelProgress(null);
-              }
-            },
-          },
+      const doc = await this.runEngine(data, file, controller.signal, {
+        onProgress: (p) => {
+          if (p.phase === "page-done") state.pageDone(p.page, p.pageCount, p.ms);
+          else state.setPage(p.phase, p.page, p.pageCount);
+          status?.setText(state.statusBar());
         },
-      );
+        // Per-token, so the dialog can prove it is alive mid-page rather than
+        // sitting on one line for the ~30-60 s a page takes.
+        onStep: (tokens) => {
+          state.tokens = tokens;
+        },
+        onModelProgress: (p) => {
+          if (p?.status === "progress" && p.file?.includes("decoder")) {
+            state.setModelProgress(p.progress || 0);
+          } else if (p?.status === "ready") {
+            state.setModelProgress(null);
+          }
+        },
+      });
 
       const parent = file.parent?.path ?? "";
       const base = this.settings.outputFolder.trim() || parent;
@@ -474,6 +492,7 @@ export default class PdfToMdPlugin extends Plugin {
         markdownChars: doc.markdown.length,
         figures: doc.figures.length,
         warnings: doc.warnings,
+        mode: this.lastRunMode,
         elapsedSec: Math.round((performance.now() - started) / 1000),
         perPage: doc.timings.perPage,
       };
@@ -489,11 +508,102 @@ export default class PdfToMdPlugin extends Plugin {
       return {
         ok: false,
         cancelled,
+        mode: this.lastRunMode,
         error: String(e?.message ?? e),
         stack: String(e?.stack ?? "").split("\n").slice(0, 6).join("\n"),
         elapsedSec: Math.round((performance.now() - started) / 1000),
       };
     }
+  }
+
+  /**
+   * Run the conversion, in a worker if we can and in the renderer if we can't.
+   *
+   * The two paths take the same options and produce the same
+   * `AssembledDocument` — the worker one just runs the identical engine in
+   * another thread. Falling back is worth the branch: a missing or unloadable
+   * `worker.js` (an old install that only copied main.js, say) should cost
+   * responsiveness, not the feature. It says so out loud rather than quietly
+   * running somewhere the user didn't expect.
+   */
+  private async runEngine(
+    data: Uint8Array,
+    file: TFile,
+    signal: AbortSignal,
+    hooks: Pick<WorkerConvertOptions, "onProgress" | "onStep" | "onModelProgress">,
+  ): Promise<AssembledDocument> {
+    const shared = {
+      maxPages: this.settings.maxPages || undefined,
+      sourceLabel: file.path,
+      titleFallback: file.basename,
+      perPageTimeoutMs: Math.max(1, this.settings.perPageTimeoutSec) * 1000,
+    };
+
+    if (this.settings.useWorker) {
+      let url: string | null = null;
+      try {
+        url = await this.resolveWorkerUrl();
+      } catch (e: any) {
+        // Only worker *setup* falls back. Once conversion has started, a failure
+        // is a real failure and must surface as one.
+        console.warn(
+          `[pdf-to-md] no conversion worker (${e?.message ?? e}) — ` +
+            `converting on the main thread; Obsidian may feel sluggish.`,
+        );
+        new Notice("Converting on the main thread — worker unavailable, see console.", 6000);
+      }
+      if (url) {
+        this.lastRunMode = "worker";
+        return convertPdfInWorker(url, data, {
+          ...shared,
+          signal,
+          ...hooks,
+          onReady: (env) => console.log("[pdf-to-md] worker ready:", env),
+        });
+      }
+    }
+
+    this.lastRunMode = "renderer";
+    return convertPdfBrowser(
+      { transformers, pdfjs, data },
+      {
+        maxPages: shared.maxPages,
+        sourceLabel: shared.sourceLabel,
+        titleFallback: shared.titleFallback,
+        signal,
+        onProgress: hooks.onProgress,
+        vlm: {
+          perPageTimeoutMs: shared.perPageTimeoutMs,
+          onStep: (tokens) => hooks.onStep?.(tokens),
+          progressCallback: (p: any) => hooks.onModelProgress?.(p),
+        },
+      },
+    );
+  }
+
+  /**
+   * Blob URL for the worker bundle, built once per session.
+   *
+   * `manifest.dir` is the installed plugin folder relative to the vault root; a
+   * failed read is cached as a failure only for this call, so reinstalling the
+   * plugin and retrying works without a reload.
+   */
+  private resolveWorkerUrl(): Promise<string> {
+    if (!this.workerUrl) {
+      const dir = this.manifest.dir ?? `${this.app.vault.configDir}/plugins/${this.manifest.id}`;
+      this.workerUrl = workerBlobUrl((name) =>
+        this.app.vault.adapter.read(normalizePath(`${dir}/${name}`)),
+      );
+      this.workerUrl.catch(() => {
+        this.workerUrl = null;
+      });
+    }
+    return this.workerUrl;
+  }
+
+  onunload(): void {
+    this.workerUrl?.then((url) => URL.revokeObjectURL(url)).catch(() => {});
+    this.workerUrl = null;
   }
 
   private async ensureFolder(path: string): Promise<void> {
@@ -568,6 +678,19 @@ class PdfToMdSettingTab extends PluginSettingTab {
       .addText((t) =>
         t.setValue(String(this.plugin.settings.perPageTimeoutSec)).onChange(async (v) => {
           this.plugin.settings.perPageTimeoutSec = parseInt(v, 10) || DEFAULT_SETTINGS.perPageTimeoutSec;
+          await this.plugin.saveSettings();
+        }),
+      );
+
+    new Setting(containerEl)
+      .setName("Convert in a background thread")
+      .setDesc(
+        "Keeps Obsidian responsive during conversion and frees the model's memory " +
+          "when it finishes. Turn off only to diagnose a conversion problem.",
+      )
+      .addToggle((t) =>
+        t.setValue(this.plugin.settings.useWorker).onChange(async (v) => {
+          this.plugin.settings.useWorker = v;
           await this.plugin.saveSettings();
         }),
       );

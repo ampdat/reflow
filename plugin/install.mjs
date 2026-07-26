@@ -25,7 +25,10 @@ if (!existsSync(join(vault, ".obsidian"))) {
 }
 
 mkdirSync(dest, { recursive: true });
-for (const f of ["main.js", "manifest.json"]) {
+// worker.js is read back at runtime from this folder and run as a blob URL —
+// see plugin/worker-host.ts. Without it the plugin falls back to converting on
+// the renderer's main thread.
+for (const f of ["main.js", "worker.js", "manifest.json"]) {
   cpSync(join("dist", f), join(dest, f));
 }
 

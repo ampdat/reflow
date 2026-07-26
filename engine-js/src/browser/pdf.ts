@@ -3,6 +3,9 @@
  * injected (not imported) so the host (web harness or Obsidian plugin) controls
  * the version and worker wiring. Implements the same PageSource the Node adapter
  * does, so core/convert.ts runs unchanged.
+ *
+ * Runs on a document *or* inside a Web Worker; the two differ enough that the
+ * differences are handled here rather than by each host (see `docParams`).
  */
 
 import type { PageSource, RenderedPage, TextToken } from "../core/types.js";
@@ -43,6 +46,11 @@ async function withTimerScheduling<T>(fn: () => Promise<T>): Promise<T> {
   const g = globalThis as any;
   const raf = g.requestAnimationFrame;
   // Node has no rAF; pdf.js takes its microtask path there and needs no help.
+  // A Web Worker is *not* such a case, tempting as it is to assume: Chromium
+  // exposes `requestAnimationFrame` on DedicatedWorkerGlobalScope (measured in
+  // Obsidian's worker: present, and it fires). Whether it keeps firing when the
+  // window is hidden — the condition that caused the original stall — is
+  // untested, so the shim stays on in workers too rather than resting on it.
   if (typeof raf !== "function") return fn();
   const caf = g.cancelAnimationFrame;
   g.requestAnimationFrame = (cb: (t: number) => void) =>
@@ -54,6 +62,111 @@ async function withTimerScheduling<T>(fn: () => Promise<T>): Promise<T> {
     g.requestAnimationFrame = raf;
     g.cancelAnimationFrame = caf;
   }
+}
+
+/**
+ * pdf.js scratch canvases, made without a `document`.
+ *
+ * `page.render()` draws into the context we hand it, but transparency groups,
+ * soft masks and tiling patterns make their *own* intermediate canvases through
+ * a CanvasFactory — and the default one is `DOMCanvasFactory`, i.e.
+ * `document.createElement("canvas")`. In a worker there is no document, so any
+ * page using those features would throw. The interface pdf.js actually consumes
+ * is just create/reset/destroy (`BaseCanvasFactory`), so an OffscreenCanvas
+ * implementation is a drop-in.
+ */
+class OffscreenCanvasFactory {
+  create(width: number, height: number) {
+    if (width <= 0 || height <= 0) throw new Error("Invalid canvas size");
+    const canvas = new OffscreenCanvas(width, height);
+    return { canvas, context: canvas.getContext("2d", { willReadFrequently: true }) };
+  }
+  reset(entry: { canvas: OffscreenCanvas | null }, width: number, height: number): void {
+    if (!entry.canvas) throw new Error("Canvas is not specified");
+    if (width <= 0 || height <= 0) throw new Error("Invalid canvas size");
+    entry.canvas.width = width;
+    entry.canvas.height = height;
+  }
+  destroy(entry: { canvas: OffscreenCanvas | null; context: unknown }): void {
+    if (!entry.canvas) throw new Error("Canvas is not specified");
+    entry.canvas.width = 0;
+    entry.canvas.height = 0;
+    entry.canvas = null;
+    entry.context = null;
+  }
+}
+
+/**
+ * pdf.js's DOM filter factory builds `<svg><filter>` elements to apply image
+ * masks and colour transforms. There is nothing to build them in inside a
+ * worker; "none" is the documented no-op every method may return, and it is
+ * exactly what pdf.js's own Node factory does — the same path the fixture-
+ * validated CPU engine runs on.
+ */
+class NoopFilterFactory {
+  addFilter(): string {
+    return "none";
+  }
+  addHCMFilter(): string {
+    return "none";
+  }
+  addAlphaFilter(): string {
+    return "none";
+  }
+  addLuminosityFilter(): string {
+    return "none";
+  }
+  addHighlightHCMFilter(): string {
+    return "none";
+  }
+  destroy(): void {}
+}
+
+export interface LoadPdfBrowserOptions {
+  /**
+   * Where pdf.js fetches the standard 14 font programs (Times, Helvetica,
+   * Courier…), e.g. `.../pdfjs-dist@4.10.38/standard_fonts/`.
+   *
+   * **Required when there is no `document`**, and quietly destructive without
+   * it. Rendering then runs with `disableFontFace`, so pdf.js rasterizes those
+   * fonts from their own outlines instead of handing them to the platform font
+   * stack — and with no source for the outlines it drops the glyphs one by one
+   * (`getPathGenerator - ignoring character`) and rasterizes a page with holes
+   * in the text. That is invisible downstream: the VLM simply reads a page
+   * missing words, and the only symptom is slightly short output.
+   */
+  standardFontDataUrl?: string;
+  /** CMap pack location — needed for CJK and other encoded fonts. */
+  cMapUrl?: string;
+}
+
+/**
+ * Extra `getDocument` parameters needed when there is no document.
+ *
+ * Font handling matters as much as the canvas: with `disableFontFace` left at
+ * its browser default, pdf.js registers `FontFace`s against `document.fonts`.
+ * Turning it off makes pdf.js draw glyph outlines onto the canvas instead —
+ * which is what the Node adapter does, so the rasterization the VLM sees stays
+ * the one the fixture suite validated.
+ */
+function docParams(opts: LoadPdfBrowserOptions): Record<string, unknown> {
+  if (typeof document !== "undefined") return {};
+  return {
+    CanvasFactory: OffscreenCanvasFactory,
+    FilterFactory: NoopFilterFactory,
+    disableFontFace: true,
+    useSystemFonts: false,
+    standardFontDataUrl: opts.standardFontDataUrl,
+    cMapUrl: opts.cMapUrl,
+    cMapPacked: true,
+    // Not optional here. Left to its default, pdf.js *computes* this flag from
+    // `isValidFetchUrl(cMapUrl, document.baseURI)` — a bare `document` reference
+    // that throws ReferenceError off-main-thread, and only once both URLs above
+    // are supplied, so it hides behind the very fix it accompanies. Fetching the
+    // sidecars from pdf.js's own worker is the right answer anyway: they are
+    // absolute URLs and need no base to resolve against.
+    useWorkerFetch: true,
+  };
 }
 
 async function canvasToPng(canvas: AnyCanvas): Promise<Uint8Array> {
@@ -74,8 +187,23 @@ function parsePublished(creationDate: string | undefined): string | undefined {
   return m ? `${m[1]}-${m[2]}-${m[3]}` : undefined;
 }
 
-export async function loadPdfBrowser(pdfjs: any, data: Uint8Array): Promise<PageSource> {
-  const doc = await pdfjs.getDocument({ data, isEvalSupported: false }).promise;
+export async function loadPdfBrowser(
+  pdfjs: any,
+  data: Uint8Array,
+  opts: LoadPdfBrowserOptions = {},
+): Promise<PageSource> {
+  // Refuse to render blind rather than render badly. Omitting this URL off-main-
+  // thread costs glyphs, not an exception — pdf.js warns per dropped character
+  // and returns a page with holes in it, which reaches the VLM as a page that
+  // simply says less. Nothing downstream can tell that from a sparse page.
+  if (typeof document === "undefined" && !opts.standardFontDataUrl) {
+    throw new Error(
+      "loadPdfBrowser: standardFontDataUrl is required when running without a document " +
+        "(pdf.js rasterizes the standard 14 fonts itself here and silently drops glyphs without it)",
+    );
+  }
+
+  const doc = await pdfjs.getDocument({ data, isEvalSupported: false, ...docParams(opts) }).promise;
 
   let author: string | undefined;
   let published: string | undefined;

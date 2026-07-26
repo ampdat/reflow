@@ -1,6 +1,11 @@
 // Bundle main.ts (+ the engine-js core, transformers.js, pdf.js) into a single
 // CJS dist/main.js for Obsidian, and stage manifest.json alongside it so `dist/`
 // is a drop-in plugin folder. `obsidian` and `electron` are provided by the host.
+//
+// worker.ts gets its own IIFE bundle (dist/worker.js) — the conversion runs off
+// the main thread, and a worker script cannot be CJS or share main.js's module
+// scope. It is loaded at runtime from the plugin folder, not inlined, so
+// Obsidian doesn't parse a second copy of transformers.js at startup.
 import esbuild from "esbuild";
 import { copyFileSync, mkdirSync, readFileSync } from "node:fs";
 
@@ -82,32 +87,47 @@ const forceWebBackend = `(function(){try{var p=(typeof process!=="undefined")?pr
 
 mkdirSync("dist", { recursive: true });
 
-const ctx = await esbuild.context({
-  entryPoints: ["main.ts"],
+const shared = {
   bundle: true,
-  format: "cjs",
   target: "es2022",
   platform: "browser",
-  outfile: "dist/main.js",
   external: ["obsidian", "electron", "@electron/remote", "@codemirror/*", "@lezer/*"],
+  // The worker needs the spoof as much as the renderer does: Obsidian launches
+  // with --node-integration-in-worker, so `process.release.name === "node"` is
+  // true there too and transformers.js would pick its cpu-only node backend.
   banner: { js: forceWebBackend },
   plugins: [inlinePatchedOrtGlue],
   sourcemap: watch ? "inline" : false,
   minify: !watch,
   logLevel: "info",
-});
+};
+
+const contexts = await Promise.all([
+  esbuild.context({
+    ...shared,
+    entryPoints: ["main.ts"],
+    format: "cjs",
+    outfile: "dist/main.js",
+  }),
+  esbuild.context({
+    ...shared,
+    entryPoints: ["worker.ts"],
+    format: "iife",
+    outfile: "dist/worker.js",
+  }),
+]);
 
 function stageManifest() {
   copyFileSync("manifest.json", "dist/manifest.json");
 }
 
 if (watch) {
-  await ctx.watch();
+  await Promise.all(contexts.map((c) => c.watch()));
   stageManifest();
   console.log("watching… (dist/)");
 } else {
-  await ctx.rebuild();
+  await Promise.all(contexts.map((c) => c.rebuild()));
   stageManifest();
-  await ctx.dispose();
-  console.log("built → dist/{main.js,manifest.json}");
+  await Promise.all(contexts.map((c) => c.dispose()));
+  console.log("built → dist/{main.js,worker.js,manifest.json}");
 }
