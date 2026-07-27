@@ -178,8 +178,14 @@ const mainCtx = await esbuild.context({
   ],
 });
 
+// manifest.json lives at the *repository* root, not next to the source: the
+// community directory reads the manifest at the HEAD of the default branch, so
+// that copy is the one the world sees and there must not be a second one here to
+// drift from it. The build stages it into dist/ with the bundle.
+const MANIFEST = "../manifest.json";
+
 function stageAssets() {
-  copyFileSync("manifest.json", "dist/manifest.json");
+  copyFileSync(MANIFEST, "dist/manifest.json");
   copyFileSync("styles.css", "dist/styles.css");
 }
 

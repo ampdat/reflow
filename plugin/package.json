@@ -11,7 +11,8 @@
     "dev": "node esbuild.config.mjs --watch",
     "install:vault": "node install.mjs",
     "deploy": "node esbuild.config.mjs --dev && node install.mjs",
-    "lint": "eslint .",
+    "lint": "eslint . && node check-manifest.mjs",
+    "lint:manifest": "node check-manifest.mjs",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

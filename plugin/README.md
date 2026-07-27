@@ -118,6 +118,23 @@ Obsidian's installer downloads **only** `main.js`, `manifest.json` and
    the worker bundle, and two copies of the pdf.js worker (the renderer path and
    the conversion worker each need one).
 
+### The manifest lives at the repository root
+
+[`../manifest.json`](../manifest.json), not next to this source, because the
+community directory reads the manifest at the HEAD of the default branch. There
+is deliberately no second copy here to drift from it: `esbuild.config.mjs` stages
+the root one into `dist/`.
+
+One consequence worth knowing before you chase it: `eslint-plugin-obsidianmd`
+looks for `manifest.json` in its own working directory, so linting from `plugin/`
+prints a harmless *"Failed to load JSON file"* line and cannot check the manifest
+itself. [`check-manifest.mjs`](check-manifest.mjs) asserts the rules that
+actually reject a submission — id shape, description length and punctuation,
+semver, `isDesktopOnly`, and `versions.json` agreeing with the manifest — and
+`npm run lint` runs both.
+
+### Lint and release
+
 `npm run lint` runs [`eslint-plugin-obsidianmd`](https://github.com/obsidianmd/eslint-plugin) —
 the same guideline checks the directory's automated review applies to *every*
 published version, not just the first. It must be error-clean before a release.
@@ -127,15 +144,13 @@ warn: every one of them lands on an untyped third-party surface (transformers.js
 [`eslint.config.mjs`](eslint.config.mjs).
 
 Releases are cut by tagging: [`.github/workflows/release.yml`](../.github/workflows/release.yml)
-verifies the tag equals `manifest.json`'s version (no `v` prefix — a mismatch
-fails silently in the directory), lints, typechecks, builds, and attaches the
-three files as a draft release.
+checks the manifest and that the tag equals its version (no `v` prefix — a
+mismatch fails silently in the directory), lints, typechecks, builds, and
+attaches the three files as a draft release.
 
-**Still to do before submitting:** the plugin needs to live in a public repo with
-`manifest.json` at its *root* — the directory reads the manifest at the HEAD of
-the default branch — and submission happens at
-[community.obsidian.md](https://community.obsidian.md) (since May 2026; the old
-`obsidian-releases` pull request is gone).
+**Still to do before submitting:** make the repository public, cut the first
+release, and submit at [community.obsidian.md](https://community.obsidian.md)
+(since May 2026; the old `obsidian-releases` pull request is gone).
 
 ## Conversion runs in a worker
 

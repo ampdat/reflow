@@ -19,8 +19,19 @@ export default tseslint.config(
     plugins: { "@typescript-eslint": tseslint.plugin },
     languageOptions: {
       parserOptions: { project: "./tsconfig.json", tsconfigRootDir: import.meta.dirname },
-      // Build-time constant, `define`d by esbuild (see virtual.d.ts).
-      globals: { __REFLOW_DEV__: "readonly" },
+      globals: {
+        // Build-time constant, `define`d by esbuild (see virtual.d.ts).
+        __REFLOW_DEV__: "readonly",
+        // `manifest.json` lives at the repository root, because that is where
+        // the community directory reads it from. This config's base path is
+        // plugin/, so the obsidianmd rules can no longer find it and fall back
+        // to assuming a mobile-capable plugin, which makes Electron's `process`
+        // look undefined. The manifest says `isDesktopOnly: true`; the checks
+        // that read it directly live in `npm run lint:manifest`. (The
+        // "Failed to load JSON file ... manifest.json" line eslint prints is
+        // that same lookup missing, and is harmless.)
+        process: "readonly",
+      },
     },
     rules: {
       // Warnings, not errors: every one of these lands on a *third-party*

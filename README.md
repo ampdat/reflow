@@ -1,12 +1,47 @@
 # Reflow
 
-**Local, private PDF → clean Markdown. Figures, tables, and math survive. Nothing uploads.**
+**An Obsidian plugin that converts a PDF into clean, readable Markdown entirely on your device. Figures, tables, and math survive. Nothing uploads.**
 
-*(The repository is still named `pdf-to-md`; the shipping product — the Obsidian
-plugin in [`plugin/`](./plugin) — is **Reflow**. The name says what it does to a
-two-column paper, and it survives the move to EPUB and e-readers in M5.)*
+Right-click a PDF in your vault → **Convert to Markdown**. A vision model runs
+locally on your GPU and writes a Markdown package next to the source:
 
-Convert a PDF on your Mac and get a Markdown package your Obsidian vault reads beautifully — then, from that same clean core, an EPUB for your e-reader. Conversion is always local; delivery to each reader takes the smoothest path that reader allows.
+```
+1706.03762v7.pdf
+1706.03762v7/
+  1706.03762v7.md     # frontmatter, headings, tables, $LaTeX$ math, figure links
+  images/             # extracted figures
+  meta.json           # engine, timings, warnings
+```
+
+No API key, no account, no page limit, and the document never leaves your
+machine to be converted. A two-column paper becomes one reflowable column in
+your own typography — which is the point of the name.
+
+## Install
+
+Not yet in the community directory. Until then, build it yourself:
+
+```bash
+cd plugin && npm install && npm run deploy
+```
+
+then enable **Reflow** in Settings → Community plugins. Full build and
+development instructions: [plugin/README.md](./plugin/README.md).
+
+## Using it
+
+- **Convert to Markdown** in a PDF's right-click menu, or the *Convert active
+  PDF to Markdown* command.
+- A progress dialog shows the page, live token count, elapsed time and estimate.
+  Close it to keep reading — conversion carries on and moves to the status bar.
+- Settings: output folder, page limit, per-page time limit, compute backend, and
+  whether to convert on a background thread.
+
+**Desktop only**, and a WebGPU-capable machine is strongly preferred: without one
+the plugin falls back to the CPU, says so in red, and takes minutes per page.
+The first conversion downloads about 1 GB of model weights from Hugging Face and
+caches them — that and two pinned CDN assets are the only network use, itemised
+in [plugin/README.md](./plugin/README.md#network-use).
 
 ---
 

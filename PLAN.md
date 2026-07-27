@@ -549,10 +549,21 @@ without the per-platform binaries. Keep it in the back pocket if a machine ever 
       *every* published version since May 2026 — is error-clean. Re-verified live after the
       changes: `attention` and `bert` page 1 convert on both the worker and renderer paths,
       titles intact.
-- [ ] **Submit.** Needs a public repo with `manifest.json` at its *root* (the directory reads the
-      manifest at HEAD of the default branch), then submission via community.obsidian.md — the
-      `obsidian-releases` PR route is gone. Recommendation on record: split the plugin into its own
-      repo and keep this one as the private lab notebook.
+- [x] **Repository conforms to the submission checklist.** Renamed to `reflow`; `manifest.json` and
+      `versions.json` moved to the *repository root* (the directory reads the manifest at HEAD of
+      the default branch) with the build staging the root copy into `dist/` so no second manifest
+      can drift; root `README.md` now leads with what the plugin is, how to install it and how to
+      use it, rather than the project thesis; `LICENSE` at the root. The move cost one piece of
+      tooling: `eslint-plugin-obsidianmd` reads `manifest.json` from its own cwd, so linting from
+      `plugin/` can no longer see it (and silently assumed a mobile plugin, which made Electron's
+      `process` an undefined global). `plugin/check-manifest.mjs` asserts the submission rules
+      directly and gates the release workflow.
+- [ ] **Submit.** Blocked on two things that are the author's to do: the repository is still
+      **private**, and there is **no release yet** — the directory needs a tag equal to the manifest
+      version carrying `main.js`, `manifest.json`, `styles.css`. Then community.obsidian.md; the
+      `obsidian-releases` PR route is gone.
+- [ ] **Windows and Linux remain untested.** The code no longer assumes WebGPU (probe → candidates →
+      CPU fallback, all unit-tested against fake navigators), but nothing has run on either OS.
 
 **Gate 4:** fresh Obsidian install → plugin → converted paper in vault in under 2 minutes, offline
 after model cache.
