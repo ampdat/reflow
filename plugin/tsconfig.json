@@ -14,5 +14,13 @@
     // Bundler-mode resolution; point at it directly.
     "paths": { "onnxruntime-web": ["./node_modules/onnxruntime-web/types.d.ts"] }
   },
-  "include": ["*.ts", "../engine-js/src/**/*.ts"]
+  // Only the plugin's own sources are listed. tsc follows imports from here, so
+  // the engine's core/ and browser/ modules are still fully checked — while its
+  // *Node* adapters (src/pdf.ts, src/vlm.ts) are not, which is the point: they
+  // import @napi-rs/canvas and pdfjs-dist/legacy, dependencies of the engine-js
+  // package that the plugin does not install. Globbing all of engine-js/src
+  // typechecked clean on a machine that happened to have engine-js/node_modules
+  // populated, and failed in CI, which installs only plugin/. engine-js has its
+  // own tsconfig for its own files.
+  "include": ["*.ts"]
 }
