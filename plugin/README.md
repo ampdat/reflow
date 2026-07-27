@@ -311,9 +311,3 @@ A full loop is `npm run deploy && node tools/obsidian-drive.mjs reload`, then an
 - **Per-page time limit** — generation for a page is cut off after this long and the
   page is flagged incomplete. Raise it for dense pages or a slower GPU.
 - **Convert in a background thread** — on by default; see above.
-
-## License
-
-MIT — see [../LICENSE](../LICENSE). Bundled third-party code keeps its own license
-(pdf.js and transformers.js Apache-2.0, onnxruntime-web MIT); granite-docling-258M
-is Apache-2.0.

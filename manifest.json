@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "minAppVersion": "1.5.0",
   "description": "Convert a PDF into clean, readable Markdown entirely on your device. Figures, tables, and math survive. No API key, no upload, no page limit.",
-  "author": "Rob Currie",
+  "author": "Ampdat",
   "authorUrl": "https://github.com/ampdat/reflow",
   "isDesktopOnly": true
 }
