@@ -82,9 +82,25 @@ def _pdf_metadata(pdf_path: Path) -> dict:
     return out
 
 
+def _warning_callout(warnings: list[str]) -> str:
+    """Reader-facing banner, mirroring `warningCallout` in engine-js/src/core/convert.ts.
+
+    meta.json already records these, but nobody reads a sidecar JSON before reading
+    a paper, so a lossy conversion produced a note that looked perfectly clean.
+    Emitted only when there is something to say.
+    """
+    lines = [
+        f"> [!warning]+ Conversion warnings ({len(warnings)})",
+        "> This note was converted from a PDF and parts of it may be incomplete.",
+        "> Check the source PDF where flagged below.",
+        *(f"> - {w}" for w in warnings),
+    ]
+    return "\n".join(lines) + "\n\n"
+
+
 def _frontmatter(
     *, title: str, source: Path, pages: int, author: str | None, published: str | None,
-    description: str | None,
+    description: str | None, conversion_warnings: int = 0,
 ) -> str:
     lines = ["---", f"title: {json.dumps(title)}", f"source: {json.dumps(str(source))}"]
     if author:
@@ -96,6 +112,8 @@ def _frontmatter(
     if description:
         lines.append(f"description: {json.dumps(description)}")
     lines.append(f"pages: {pages}")
+    if conversion_warnings:
+        lines.append(f"conversion_warnings: {conversion_warnings}")
     lines.extend(["tags:", "  - paper", "  - pdf-to-md", "---", ""])
     return "\n".join(lines)
 
@@ -139,31 +157,38 @@ def convert_pdf(
     # emitted verbatim in image refs — a bare name keeps both correct and portable.
     doc.save_as_markdown(md_path, image_mode=ImageRefMode.REFERENCED, artifacts_dir=Path("images"))
 
-    md_text = _clean_math(md_path.read_text(encoding="utf-8"))
+    body = _clean_math(md_path.read_text(encoding="utf-8"))
     pdf_meta = _pdf_metadata(pdf_path)
-    md_text = (
-        _frontmatter(
-            title=title,
-            source=pdf_path.resolve(),
-            pages=len(doc.pages),
-            author=pdf_meta.get("Author"),
-            published=pdf_meta.get("published"),
-            description=pdf_meta.get("Subject"),
-        )
-        + md_text
-    )
-    md_path.write_text(md_text, encoding="utf-8")
 
     images_dir = out_dir / "images"
     pages = len(doc.pages)
     image_count = len(list(images_dir.glob("*"))) if images_dir.exists() else 0
 
+    # Warnings are settled before the markdown is assembled, because both the
+    # frontmatter count and the reader-facing banner depend on them. Measured
+    # against the body, matching engine-js: the question is whether enough *text
+    # was extracted*, and frontmatter is not extracted text.
     warnings: list[str] = []
-    if pages and len(md_text) / pages < IMAGE_ONLY_CHARS_PER_PAGE:
+    if pages and len(body) / pages < IMAGE_ONLY_CHARS_PER_PAGE:
         warnings.append(
             "very little text extracted; source may be scanned/image-only"
             + ("" if ocr else " — retry with --ocr")
         )
+
+    md_text = (
+        _frontmatter(
+            title=title,
+            source=pdf_path.resolve(),
+            pages=pages,
+            author=pdf_meta.get("Author"),
+            published=pdf_meta.get("published"),
+            description=pdf_meta.get("Subject"),
+            conversion_warnings=len(warnings),
+        )
+        + (_warning_callout(warnings) if warnings else "")
+        + body
+    )
+    md_path.write_text(md_text, encoding="utf-8")
 
     meta = {
         "source": str(pdf_path),

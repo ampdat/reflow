@@ -17,8 +17,9 @@ Strategy in one paragraph: the Python Docling bootstrap **proved reading quality
 paper.pdf           # the source, e.g. 1706.03762v7.pdf
 paper/              # package folder, named from the PDF filename — drops into a vault as-is
   paper.md          # YAML frontmatter properties (title, source, author, created,
-                    # tags — Obsidian web-clipper style), then headings, MD/HTML
-                    # tables, $LaTeX$ math (MathJax-safe), figure refs
+                    # tags — Obsidian web-clipper style), then a conversion-warning
+                    # banner *if any*, then headings, MD/HTML tables, $LaTeX$ math
+                    # (MathJax-safe), figure refs
   images/           # extracted figures, stable names
   meta.json         # source, title, engine id+version, page count, timings, warnings
   paper.epub        # M5
@@ -37,6 +38,16 @@ considered and rejected — the `images/` prefix is emitted by `doctags.ts`, thr
 below anything that knows the output filename, so a flat layout would have meant
 threading an image-dir option through the parser, the assembler, both entry points and
 the worker message protocol, plus percent-encoding link paths for names with spaces.
+
+**Warnings reach the reader, not just `meta.json`.** A sidecar JSON is the wrong
+place to tell someone that the text they are about to read is incomplete — nobody
+opens it first. So warnings surface in three places at once: a
+`> [!warning]+` banner between the frontmatter and the body, an inline
+`> [!warning] Page N may be incomplete` marker at the end of each damaged page,
+and a `conversion_warnings: N` frontmatter property so a vault can be queried for
+papers worth re-checking. All three are omitted entirely when the conversion is
+clean. The inline marker exists because the markdown is reflowed and has no page
+boundaries — a banner saying "page 4" is honest but unactionable on its own.
 
 `meta.json.engine` labels the path honestly: `python-docling-bootstrap` (oracle) vs `onnx-portable` (shipping engine). Both write the same folder; the TS engine adds `model`, `timings_ms`, and `execution_providers` fields rather than inventing a parallel layout. Both also record `md_path`, since the markdown filename is no longer a constant readers can join on.
 
@@ -502,6 +513,15 @@ without the per-platform binaries. Keep it in the back pocket if a machine ever 
       immediately when the receiving thread isn't the blocked one).
 - [ ] Model download on first enable with disclosure + checksums (Smart Connections precedent);
       persist weights via IndexedDB/OPFS (Cache API unreliable in the harness pane).
+- [x] **Warnings surface to the reader, and the plugin writes `meta.json`.** The plugin had
+      never written it (`git log -S` confirms: markdown + images only since it was scaffolded),
+      so the contract was asymmetric and its warnings lived nowhere but the console and a
+      6-second Notice. Now: `meta.json` on the plugin path too (adding `run_mode` and the
+      per-page cost series), plus the banner / inline marker / frontmatter count described in
+      the contract above. Verified live — a deliberately tight 20 s per-page budget produced
+      4 real warnings, all three surfaces rendered, `meta.json` 1164 B. Re-scored afterwards:
+      WebGPU parity still **8/8** on `attention`, Python contract 6 passed. The merged-cell
+      warning now names the page (`table on page 8 …`) instead of being unlocatable.
 - [ ] Vault craft: YAML frontmatter (title/authors/DOI/citekey), relative image links, optional
       provenance links to PDF pages (`[[paper.pdf#page=N]]`).
 - [ ] Fix engine gaps the plugin inherits: figure over-detection, OTSL merged-cell spans (M3 carry-over).
@@ -585,6 +605,7 @@ comes. Nothing before that gates on mobile.
 | 2026-07-24 | M4 | — | Plugin install workflow (`ab55dd2`: dist/ + install.mjs). Live-in-Obsidian debugging: fixed transformers backend selection (WebGPU now chosen, `c583fab`); **blocked** on onnxruntime-web threaded-wasm doing `import('worker_threads')` in the renderer (emscripten Node mis-detection). Build-time glue patch attempted, didn't fire — WIP. Diagnosis + candidate fixes logged in M4. |
 | 2026-07-25 | M4 | — | **"WebGPU fails after a few pages" solved — it was never WebGPU.** pdf.js schedules page-raster continuations through `requestAnimationFrame`, which Chromium never fires in a hidden document, so `page.render()` parked forever whenever Obsidian was minimised/backgrounded (0% CPU, no error). Bisected in a hidden renderer: `getDocument` 137 ms, `getPage` 1 ms, **`page.render` timed out at 120 s**, same page renders in **192 ms** with rAF shimmed. Fixed by `withTimerScheduling()` (`browser/pdf.ts`); no-op in Node, which is why the CPU suite always passed and why this was unreproducible there by construction. Also disproved the "cost per page climbs steeply on WebGPU" note: token-capped, 8 pages are flat within ±4% (RSS within 2%), Node CPU likewise. Prefill (~15 s/page) dominates; decode ~24 tok/s. |
 | 2026-07-25 | — | — | **Nougat spike sketched** (`docs/spike-nougat.md`, perf doc §4c): `facebook/nougat-small` as a cheaper VLM. Proposal only — nothing measured yet beyond published configs and the HF export inventory. Phase gates and kill criteria written down first, so a negative result is publishable the way §4a's LiteRT verdict was. |
+| 2026-07-27 | M4 | — | **Conversion problems now reach the reader.** `meta.json` recorded warnings, but nobody opens a sidecar JSON before reading a paper, so a lossy conversion produced a note that looked perfectly clean. Added a `> [!warning]+` banner between frontmatter and body, an inline `> [!warning] Page N may be incomplete` marker at the end of each damaged page, and a `conversion_warnings: N` frontmatter property — all omitted when the conversion is clean. The inline marker is the load-bearing one: the markdown is reflowed and has no page boundaries, so a banner saying "page 4" cannot be acted on. Also closed a long-standing gap — **the plugin had never written `meta.json` at all**, leaving its warnings in the console and a 6 s Notice. Merged-cell warnings now name their page. 5 new offline tests (25 total); re-scored after the markdown changed: WebGPU parity 8/8, Python contract 6 passed. |
 | 2026-07-26 | — | — | **Artifact contract amended: packages are named from the source PDF, not the extracted title.** `1706.03762v7.pdf` → `1706.03762v7/1706.03762v7.md` + `images/` + `meta.json`. The title varied by engine and by run and discarded the identifier the reader filed the paper under, and a generic `document.md` made every converted note in a vault share one name. Title still lives in the frontmatter and `meta.title`. `images/` deliberately stays *inside* the package folder: a flat `<stem>.images/` would have needed the hardcoded `images/` prefix in `doctags.ts` threaded through the parser, assembler, both entry points and the worker protocol, plus link percent-encoding — so this shape changes the three writers only and leaves the pipeline untouched (offline tests pass unedited). `meta` gains `md_path` so readers stop joining on a filename that is no longer constant; the title sanitizers are deleted. All three engines. |
 | 2026-07-25 | M4 | — | **Inference moved into a worker** (`plugin/worker.ts`, own bundle, blob-URL start, single-use so ORT's leftovers die with the thread). Main-thread lag during conversion drops from p95 17 ms / 8 stalls >100 ms to **p95 1.1 ms / zero**, for ~5% of throughput; settled renderer RSS across three conversions ends at 1.0 GB instead of 2.9 GB; cancel settles in 74 ms instead of ~500 ms. Also disproved the accumulation blocker: on WebGPU memory **plateaus** after the first conversion in both modes — the 2528→5156→7313 MB runaway was the Node/CPU path. Nearly shipped a silent regression on the way: rendering without a `document` needs `disableFontFace`, which makes pdf.js rasterize the standard 14 fonts itself and **drop glyphs one by one** without `standardFontDataUrl` — a page with holes in the text, no error, only slightly short output (7172 vs 7207 chars). `loadPdfBrowser` now throws instead. `attention` re-verified end-to-end on the worker path: **8/8 checks**, numeric table cells intact, same guard-firing pages as the CPU oracle. |
 | 2026-07-25 | M4 | — | **Progress UI + cancel.** `assembleDocument` emitted nothing between start and finish, so the plugin's Notice froze on "Downloading model … 100%" for the whole run — no UI could have shown progress. Added `ConvertProgress` ticks, an abort signal honoured between pages *and* between decode steps, and a progress dialog (page, live token count, elapsed, ETA, cancel) that detaches to the status bar so the vault stays readable. Cancel settles in ~500 ms mid-page. Bar interpolates within a page on a running per-page average with an asymptotic tail — a linear-with-cap version froze for 51 s when a page overran its estimate. Verified live: 41 distinct bar values in 41 samples, monotonic, no freeze. |

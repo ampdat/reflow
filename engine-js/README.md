@@ -8,6 +8,9 @@ mobile — only `device`/`dtype` change.
 runs under [transformers.js](https://huggingface.co/blog/transformersjs-v4) and emits
 **DocTags** → a JS DocTags→Markdown parser → MathJax repairs → the frozen vault
 package (`<pdf-stem>/<pdf-stem>.md` + `images/` + `meta.json`, `engine: "onnx-portable"`).
+Anything that may have damaged the text is surfaced *in the note* — a warning banner,
+an inline marker at each affected page, and a `conversion_warnings` property — not only
+in `meta.json`.
 
 ## Layout
 

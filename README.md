@@ -78,7 +78,7 @@ On-device conversion on mobile and e-ink Android (a Boox Palma converting a pape
 1. **Local-first, privacy by default.** Conversion never uploads. Delivery paths that touch a cloud say so, plainly.
 2. **Quality before portability.** Prove "rather read the Markdown" with the bootstrap engine before investing in the portable one.
 3. **Markdown package is the product; everything else is an export.** Freeze the artifact contract early.
-4. **Never silently wrong.** No dropped figures without warning, no corrupted table numbers, no fake success on scanned inputs. Fail loudly.
+4. **Never silently wrong.** No dropped figures without warning, no corrupted table numbers, no fake success on scanned inputs. Fail loudly — and fail loudly *where the reader will look*: a conversion that lost text says so in a banner at the top of the note and at the page it lost, not only in a sidecar JSON nobody opens.
 5. **Measurable gates.** Fixtures + automated checks + a human "would I read this?" verdict, logged.
 6. **Licensing clean.** MIT/Apache components for anything shipped commercially (Docling family ✅; Marker license-restricted — experiment only).
 

@@ -24,7 +24,7 @@
     "convert": "tsx src/cli.ts convert",
     "cli": "tsx src/cli.ts",
     "test": "vitest run",
-    "test:offline": "vitest run test/doctags.test.ts",
+    "test:offline": "vitest run test/doctags.test.ts test/guard.test.ts test/warnings.test.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

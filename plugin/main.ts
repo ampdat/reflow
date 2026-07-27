@@ -470,6 +470,7 @@ export default class PdfToMdPlugin extends Plugin {
       await this.ensureFolder(folder);
       await this.ensureFolder(`${folder}/images`);
 
+      let images = 0;
       for (const fig of doc.figures) {
         if (!fig.png) continue;
         const ab = fig.png.buffer.slice(
@@ -477,12 +478,44 @@ export default class PdfToMdPlugin extends Plugin {
           fig.png.byteOffset + fig.png.byteLength,
         );
         await this.writeBinary(`${folder}/images/${fig.id}.png`, ab as ArrayBuffer);
+        images++;
       }
       await this.writeText(mdPath, doc.markdown);
 
+      // The plugin used to write only the markdown and the figures, which left
+      // the artifact contract asymmetric (the CLI and the Python oracle both
+      // write meta.json) and left the plugin's warnings living nowhere but a
+      // 6-second Notice and the console. The reader-facing half of that is the
+      // banner in the note; this is the durable, machine-readable half.
+      const meta = {
+        source: file.path,
+        title: doc.title,
+        out_dir: folder,
+        md_path: mdPath,
+        engine: "onnx-portable",
+        engine_version: this.manifest.version,
+        model: doc.model,
+        options: { formulas: true, ocr: false },
+        pages: doc.pageCount,
+        images,
+        markdown_chars: doc.markdown.length,
+        timings_ms: { load: 0, inference: doc.timings.inference, assemble: doc.timings.assemble },
+        wall_ms: Math.round(performance.now() - started),
+        execution_providers: doc.executionProviders,
+        warnings: doc.warnings,
+        // Plugin-only, and worth keeping: whether the run was in a worker, and
+        // the per-page cost series that made the WebGPU stall diagnosable.
+        run_mode: this.lastRunMode,
+        per_page: doc.timings.perPage,
+      };
+      await this.writeText(`${folder}/meta.json`, JSON.stringify(meta, null, 2));
+
       closeViews();
+      // Point at the note, not the console: the warnings are now banner-ed at
+      // the top of the document itself, which is where someone about to read it
+      // will actually look.
       const warn = doc.warnings.length
-        ? ` — ${doc.warnings.length} warning(s), see console`
+        ? ` — ${doc.warnings.length} warning(s), listed at the top of the note`
         : "";
       if (doc.warnings.length) console.warn("[pdf-to-md]", doc.warnings);
       new Notice(`Converted → ${mdPath}${warn}`, 6000);

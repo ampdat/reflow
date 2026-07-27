@@ -26,6 +26,12 @@ export interface FrontmatterInput {
   description?: string;
   /** ISO date (YYYY-MM-DD); defaults to today. Injectable for deterministic tests. */
   created?: string;
+  /**
+   * How many conversion warnings this document carries. Omitted when zero, so
+   * clean notes gain no property — and so a vault can be queried (Dataview et
+   * al.) for the papers worth re-checking against their PDFs.
+   */
+  conversionWarnings?: number;
 }
 
 /** JSON-quote a string exactly like Python's json.dumps for scalar strings. */
@@ -59,6 +65,7 @@ export function frontmatter(input: FrontmatterInput): string {
   lines.push(`created: ${input.created ?? today()}`);
   if (input.description) lines.push(`description: ${jsonStr(input.description)}`);
   lines.push(`pages: ${input.pages}`);
+  if (input.conversionWarnings) lines.push(`conversion_warnings: ${input.conversionWarnings}`);
   lines.push("tags:", "  - paper", "  - pdf-to-md", "---", "");
 
   return lines.join("\n");
