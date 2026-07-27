@@ -98,10 +98,11 @@ for (const id of ids) {
     continue;
   }
 
-  // The plugin writes <outputFolder>/<Title>/document.md inside the vault.
-  const mdPath = join(VAULT, summary.folder, "document.md");
+  // The plugin writes <outputFolder>/<pdf-stem>/<pdf-stem>.md inside the vault
+  // and hands back the path, so this harness never rebuilds it.
+  const mdPath = join(VAULT, summary.mdPath);
   if (!existsSync(mdPath)) {
-    results.push({ id, ok: false, error: `no document.md at ${mdPath}`, elapsedSec });
+    results.push({ id, ok: false, error: `no markdown at ${mdPath}`, elapsedSec });
     continue;
   }
 

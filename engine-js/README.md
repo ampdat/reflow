@@ -7,7 +7,7 @@ mobile — only `device`/`dtype` change.
 **Pipeline:** pdf.js rasterizes each page → [granite-docling-258M ONNX](https://huggingface.co/onnx-community/granite-docling-258M-ONNX)
 runs under [transformers.js](https://huggingface.co/blog/transformersjs-v4) and emits
 **DocTags** → a JS DocTags→Markdown parser → MathJax repairs → the frozen vault
-package (`<Title>/document.md` + `images/` + `meta.json`, `engine: "onnx-portable"`).
+package (`<pdf-stem>/<pdf-stem>.md` + `images/` + `meta.json`, `engine: "onnx-portable"`).
 
 ## Layout
 
@@ -15,7 +15,7 @@ package (`<Title>/document.md` + `images/` + `meta.json`, `engine: "onnx-portabl
 |------|------|:---:|
 | `src/doctags.ts` | DocTags → Markdown (OTSL tables, `<loc_*>` bboxes, `<formula>` LaTeX) | no |
 | `src/mathjax.ts` | Brace balancing / `\tag` / `aligned` repairs (ported from the Python bootstrap) | no |
-| `src/frontmatter.ts` | Title → folder name, Obsidian YAML frontmatter | no |
+| `src/frontmatter.ts` | Obsidian YAML frontmatter | no |
 | `src/pdf.ts` | pdf.js raster + text layer + figure crops (`@napi-rs/canvas`) | no |
 | `src/vlm.ts` | transformers.js load + page → DocTags | **yes** |
 | `src/meta.ts` | `meta.json` shape (`engine`, `model`, timings, execution providers) | no |

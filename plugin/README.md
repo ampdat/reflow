@@ -4,7 +4,8 @@ Right-click a PDF in your vault → **Convert to Markdown**. Runs
 [granite-docling-258M](https://huggingface.co/onnx-community/granite-docling-258M-ONNX)
 on **WebGPU** in Obsidian's renderer via the shared [`engine-js`](../engine-js) core
 (pdf.js + transformers.js + the DocTags→Markdown parser). No server, no API keys,
-nothing uploads. Output is a vault package: `<Title>/document.md` + `images/`.
+nothing uploads. Output is a vault package named from the PDF:
+`1706.03762v7/1706.03762v7.md` + `images/`.
 
 This is the M4 shell over the fixture-validated engine (see [../PLAN.md](../PLAN.md)).
 `main.ts` is only Obsidian wiring; the whole conversion pipeline is `engine-js`.

@@ -43,8 +43,7 @@ def test_fixture_expectations(fid, convert_cached):
     expect = json.loads((EXPECT_DIR / f"{fid}.json").read_text())
 
     meta = convert_cached(pdf)
-    out = Path(meta["out_dir"])
-    md = (out / "document.md").read_text(encoding="utf-8")
+    md = Path(meta["md_path"]).read_text(encoding="utf-8")
     md_norm = _norm(md)
 
     assert expect["title_contains"] in meta["title"], f"title was: {meta['title']!r}"
@@ -72,8 +71,7 @@ def test_fixture_expectations(fid, convert_cached):
 )
 def test_private_smoke(pdf, convert_cached):
     meta = convert_cached(pdf)
-    out = Path(meta["out_dir"])
-    md = (out / "document.md").read_text(encoding="utf-8")
+    md = Path(meta["md_path"]).read_text(encoding="utf-8")
 
     assert meta["warnings"] == [], f"conversion warned: {meta['warnings']}"
     assert md.startswith("---\n"), "missing frontmatter"

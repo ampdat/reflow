@@ -1,8 +1,12 @@
 /**
- * Vault-ready output helpers: title -> folder name, and the Obsidian-style YAML
- * frontmatter block. Ported from `_sanitize_dirname` / `_frontmatter` in the
+ * The Obsidian-style YAML frontmatter block. Ported from `_frontmatter` in the
  * Python bootstrap (src/pdf2md/convert.py) so both engines emit the same
  * artifact contract.
+ *
+ * This file used to own a title -> folder-name sanitizer too. Packages are now
+ * named from the source PDF filename, which is a valid filename by construction,
+ * so there is nothing left to sanitize; the title's only remaining job is the
+ * `title:` property below.
  */
 
 /** PDF metadata surfaced by the loader (often empty on arXiv PDFs). */
@@ -33,12 +37,6 @@ function today(): string {
   const d = new Date();
   const p = (n: number) => String(n).padStart(2, "0");
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
-}
-
-/** Strip filesystem-hostile characters and collapse whitespace; cap at 120 chars. */
-export function sanitizeDirname(name: string): string {
-  const stripped = name.replace(/[\\/:*?"<>|\n\r]+/g, " ");
-  return stripped.replace(/\s+/g, " ").trim().slice(0, 120);
 }
 
 /** Split a byline into individual authors, matching the Python `re.split`. */

@@ -76,7 +76,7 @@ export interface AssembledFigure {
 /** Everything the orchestrator produces, before any file/vault I/O. */
 export interface AssembledDocument {
   title: string;
-  /** Full document.md text including YAML frontmatter. */
+  /** Full markdown text including YAML frontmatter. */
   markdown: string;
   figures: AssembledFigure[];
   pageCount: number;

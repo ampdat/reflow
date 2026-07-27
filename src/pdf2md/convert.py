@@ -1,8 +1,8 @@
 """PDF -> Markdown package conversion. Bootstrap engine: Python Docling.
 
-Artifact contract (PLAN.md): out/<Paper Title>/document.md + images/ + meta.json
-The folder is named from the extracted title so it drops into a vault cleanly;
-document.md opens with Obsidian-style YAML properties.
+Artifact contract (PLAN.md): out/<pdf-stem>/<pdf-stem>.md + images/ + meta.json
+The package is named from the source PDF so it drops into a vault cleanly and every
+note keeps a distinct name; the markdown opens with Obsidian-style YAML properties.
 """
 
 from __future__ import annotations
@@ -47,11 +47,6 @@ def _fix_formula(tex: str) -> str:
 
 def _clean_math(md: str) -> str:
     return _MATH_BLOCK_RE.sub(lambda m: f"$${_fix_formula(m.group(1))}$$", md)
-
-
-def _sanitize_dirname(name: str) -> str:
-    name = re.sub(r'[\\/:*?"<>|\n\r]+', " ", name)
-    return re.sub(r"\s+", " ", name).strip()[:120]
 
 
 def _extract_title(doc, fallback: str) -> str:
@@ -112,7 +107,7 @@ def convert_pdf(
     formulas: bool = True,
     ocr: bool = False,
 ) -> dict:
-    """Convert one PDF into out_parent/<Title>/; returns the meta dict."""
+    """Convert one PDF into out_parent/<pdf-stem>/; returns the meta dict."""
     from docling.datamodel.base_models import InputFormat
     from docling.datamodel.pipeline_options import PdfPipelineOptions
     from docling.document_converter import DocumentConverter, PdfFormatOption
@@ -133,9 +128,13 @@ def convert_pdf(
     doc = result.document
 
     title = _extract_title(doc, pdf_path.stem)
-    out_dir = out_parent / (_sanitize_dirname(title) or pdf_path.stem)
+    # The package is named from the source filename, not the extracted title: it is
+    # the identifier the reader filed the paper under, it is stable across engines
+    # and runs, and it stops every note being called "document". The title still
+    # lives in the frontmatter and in meta["title"].
+    out_dir = out_parent / pdf_path.stem
     out_dir.mkdir(parents=True, exist_ok=True)
-    md_path = out_dir / "document.md"
+    md_path = out_dir / f"{pdf_path.stem}.md"
     # artifacts_dir is resolved relative to the markdown file's directory, and is
     # emitted verbatim in image refs — a bare name keeps both correct and portable.
     doc.save_as_markdown(md_path, image_mode=ImageRefMode.REFERENCED, artifacts_dir=Path("images"))
@@ -170,6 +169,7 @@ def convert_pdf(
         "source": str(pdf_path),
         "title": title,
         "out_dir": str(out_dir),
+        "md_path": str(md_path),
         "engine": ENGINE_ID,
         "engine_version": pkg_version("docling"),
         "options": {"formulas": formulas, "ocr": ocr},

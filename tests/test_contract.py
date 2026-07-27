@@ -40,9 +40,10 @@ def test_fix_formula_wraps_alignment_in_aligned():
 def test_convert_contract(convert_cached):
     meta = convert_cached(FIXTURE)
     out = Path(meta["out_dir"])
-    assert "attention" in out.name.lower(), "folder should be named from the paper title"
+    assert out.name == FIXTURE.stem, "package folder should be named from the PDF filename"
+    assert Path(meta["md_path"]).name == f"{FIXTURE.stem}.md", "markdown should be named from the PDF"
 
-    md = (out / "document.md").read_text(encoding="utf-8")
+    md = Path(meta["md_path"]).read_text(encoding="utf-8")
     meta = json.loads((out / "meta.json").read_text(encoding="utf-8"))
 
     assert md.startswith("---\n") and "title:" in md.split("---")[1], "expected YAML frontmatter"

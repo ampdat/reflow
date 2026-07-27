@@ -2,8 +2,9 @@
  * PDF → Markdown Obsidian plugin (desktop).
  *
  * Right-click a PDF in the vault (or run the command) → the engine-js core runs
- * granite-docling on WebGPU in the renderer → a Markdown package (document.md +
- * images/) lands in the vault. No server, no API keys, nothing uploads.
+ * granite-docling on WebGPU in the renderer → a Markdown package
+ * (`<pdf-stem>/<pdf-stem>.md` + `images/`) lands in the vault. No server, no API
+ * keys, nothing uploads.
  *
  * The whole conversion pipeline is the shared, fixture-validated core
  * (../engine-js/src/browser/engine.ts); this file is just the Obsidian shell:
@@ -30,7 +31,7 @@ import * as transformers from "@huggingface/transformers";
 import * as pdfjs from "pdfjs-dist";
 
 import type { AssembledDocument } from "../engine-js/src/core/types.js";
-import { convertPdfBrowser, sanitizeDirname } from "../engine-js/src/browser/engine.js";
+import { convertPdfBrowser } from "../engine-js/src/browser/engine.js";
 import { configureOrt } from "./ort-env.js";
 import { benchPage, benchPages, installProbe, setOrtWasmPaths } from "./probe.js";
 import { convertPdfInWorker, workerBlobUrl, type WorkerConvertOptions } from "./worker-host.js";
@@ -459,9 +460,13 @@ export default class PdfToMdPlugin extends Plugin {
         },
       });
 
+      // Named from the PDF, not the extracted title: it is the identifier the
+      // reader filed the paper under, it is stable across runs, and it stops
+      // every converted note in the vault from being called "document".
       const parent = file.parent?.path ?? "";
       const base = this.settings.outputFolder.trim() || parent;
-      const folder = normalizePath(`${base}/${sanitizeDirname(doc.title) || file.basename}`);
+      const folder = normalizePath(`${base}/${file.basename}`);
+      const mdPath = `${folder}/${file.basename}.md`;
       await this.ensureFolder(folder);
       await this.ensureFolder(`${folder}/images`);
 
@@ -473,21 +478,22 @@ export default class PdfToMdPlugin extends Plugin {
         );
         await this.writeBinary(`${folder}/images/${fig.id}.png`, ab as ArrayBuffer);
       }
-      await this.writeText(`${folder}/document.md`, doc.markdown);
+      await this.writeText(mdPath, doc.markdown);
 
       closeViews();
       const warn = doc.warnings.length
         ? ` — ${doc.warnings.length} warning(s), see console`
         : "";
       if (doc.warnings.length) console.warn("[pdf-to-md]", doc.warnings);
-      new Notice(`Converted → ${folder}/document.md${warn}`, 6000);
+      new Notice(`Converted → ${mdPath}${warn}`, 6000);
 
-      const md = this.app.vault.getAbstractFileByPath(`${folder}/document.md`);
+      const md = this.app.vault.getAbstractFileByPath(mdPath);
       if (md instanceof TFile) await this.app.workspace.getLeaf(true).openFile(md);
 
       return {
         ok: true,
         folder,
+        mdPath,
         title: doc.title,
         markdownChars: doc.markdown.length,
         figures: doc.figures.length,

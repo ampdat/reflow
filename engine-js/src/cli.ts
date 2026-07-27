@@ -71,7 +71,7 @@ async function main(argv: string[]): Promise<number> {
       vlm,
     });
     process.stdout.write(
-      `wrote ${meta.out_dir}/document.md ` +
+      `wrote ${meta.md_path} ` +
         `(${meta.pages} pages, ${meta.images} images, ${meta.wall_ms} ms)\n`,
     );
     return 0;

@@ -13,6 +13,12 @@ export interface Meta {
   source: string;
   title: string;
   out_dir: string;
+  /**
+   * Path to the written markdown. The filename varies with the source PDF now
+   * (`<stem>.md`, not `document.md`), so readers must be handed it rather than
+   * rebuilding it — a path they cannot silently get wrong.
+   */
+  md_path: string;
   engine: string;
   engine_version: string;
   /** Model repo + variant actually loaded (e.g. onnx-community/granite-docling-258M-ONNX@q4f16). */

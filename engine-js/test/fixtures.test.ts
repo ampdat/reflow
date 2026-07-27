@@ -37,7 +37,7 @@ describe.skipIf(!RUN)("portable engine fixture parity", () => {
       const outParent = mkdtempSync(join(tmpdir(), `pdf2md-${id}-`));
       const meta = await convertPdf(pdf, outParent);
 
-      const md = readFileSync(join(meta.out_dir, "document.md"), "utf-8");
+      const md = readFileSync(meta.md_path, "utf-8");
       const results = runFixtureChecks(md, { title: meta.title, images: meta.images }, expect_);
 
       // Peak RSS matters for the plugin's machine requirements; the model and

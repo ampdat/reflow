@@ -22,7 +22,7 @@ def main(argv: list[str] | None = None) -> int:
     conv.add_argument("pdf", type=Path, help="input PDF")
     conv.add_argument(
         "--out", type=Path, default=Path("out"),
-        help="parent directory; a folder named after the paper title is created inside (default: out/)",
+        help="parent directory; a folder named after the PDF is created inside (default: out/)",
     )
     conv.add_argument("--no-formulas", action="store_true", help="skip formula (LaTeX) enrichment")
     conv.add_argument("--ocr", action="store_true", help="enable OCR for scanned/image-only PDFs")
@@ -41,7 +41,7 @@ def main(argv: list[str] | None = None) -> int:
 
         meta = convert_pdf(args.pdf, args.out, formulas=not args.no_formulas, ocr=args.ocr)
         print(
-            f"wrote {meta['out_dir']}/document.md "
+            f"wrote {meta['md_path']} "
             f"({meta['pages']} pages, {meta['images']} images, {meta['wall_ms']} ms)"
         )
         return 0

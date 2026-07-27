@@ -57,5 +57,4 @@ export async function convertPdfBrowser(
 
 export { loadPdfBrowser, type LoadPdfBrowserOptions } from "./pdf.js";
 export { createBrowserVlm, WEBGPU_DTYPE } from "./vlm.js";
-export { sanitizeDirname } from "../frontmatter.js";
 export type { AssembledDocument, AssembledFigure } from "../core/types.js";

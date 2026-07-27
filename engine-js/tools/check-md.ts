@@ -1,12 +1,12 @@
 /**
- * Judge an already-produced document.md against a fixture's ground truth.
+ * Judge an already-produced markdown package against a fixture's ground truth.
  *
  * The vitest suite converts *and* checks in one process, which only works for
  * the Node path. A WebGPU run happens inside Obsidian, so its markdown has to be
  * checked out-of-band — this CLI exists so that check runs the same
  * `runFixtureChecks` code rather than a reimplementation.
  *
- *   npx tsx tools/check-md.ts --id attention --md path/to/document.md \
+ *   npx tsx tools/check-md.ts --id attention --md path/to/attention.md \
  *     --title "Attention Is All You Need" --images 3
  *
  * Prints the CheckResult[] as JSON on stdout; exits non-zero if any failed.
@@ -28,7 +28,7 @@ const { values } = parseArgs({
 });
 
 if (!values.id || !values.md) {
-  process.stderr.write("usage: check-md.ts --id <fixture> --md <document.md> [--title T] [--images N]\n");
+  process.stderr.write("usage: check-md.ts --id <fixture> --md <markdown> [--title T] [--images N]\n");
   process.exit(2);
 }
 

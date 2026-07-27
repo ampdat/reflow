@@ -92,12 +92,14 @@ for (const id of ids) {
     continue;
   }
 
-  // convertPdf writes meta.json next to document.md; use it for title/images.
+  // convertPdf writes meta.json into the package folder; use it for title/images
+  // and for the markdown path, which is now named after the source PDF rather
+  // than being a constant we could join on.
   const metaPath = execFileSync("bash", ["-c", `ls -d ${JSON.stringify(outParent)}/*/meta.json`], {
     encoding: "utf8",
   }).trim();
   const meta = JSON.parse(readFileSync(metaPath, "utf8"));
-  const mdPath = join(dirname(metaPath), "document.md");
+  const mdPath = meta.md_path;
 
   const checkProc = execFileSync(
     "npx",

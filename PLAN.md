@@ -11,19 +11,34 @@ Strategy in one paragraph: the Python Docling bootstrap **proved reading quality
 - Models: document every download (name, size, cache path) in `docs/models.md`. Offline must be real after cache warm.
 - `out/` is gitignored scratch. Fixture PDFs are gitignored; `fixtures/MANIFEST.md` records sources + a fetch script.
 
-## Artifact contract (freeze at M1)
+## Artifact contract (frozen at M1; naming amended 2026-07-26)
 
 ```
-out/<Paper Title>/  # folder named from the extracted title — drops into a vault as-is
-  document.md       # YAML frontmatter properties (title, source, author, created,
+paper.pdf           # the source, e.g. 1706.03762v7.pdf
+paper/              # package folder, named from the PDF filename — drops into a vault as-is
+  paper.md          # YAML frontmatter properties (title, source, author, created,
                     # tags — Obsidian web-clipper style), then headings, MD/HTML
                     # tables, $LaTeX$ math (MathJax-safe), figure refs
   images/           # extracted figures, stable names
   meta.json         # source, title, engine id+version, page count, timings, warnings
-  document.epub     # M2+
+  paper.epub        # M5
 ```
 
-`meta.json.engine` labels the path honestly: `python-docling-bootstrap` (oracle) vs `onnx-portable` (shipping engine). Both write the same folder; the TS engine adds `model`, `timings_ms`, and `execution_providers` fields rather than inventing a parallel layout.
+**Named from the source PDF, not the extracted title.** The title depends on what the
+model read, so it varied by engine and by run and threw away the identifier the reader
+had actually filed the paper under; and a generic `document.md` made every converted
+note in a vault share one name, which Obsidian's quick-switcher renders unusable. The
+title is not lost — it stays in the frontmatter and in `meta.title`; it just stops being
+a path component. Collisions now follow filenames rather than titles: two papers with
+the same title no longer collide, two files with the same stem do.
+
+`images/` stays *inside* the package folder. A flat `paper.md` + `paper.images/` was
+considered and rejected — the `images/` prefix is emitted by `doctags.ts`, three layers
+below anything that knows the output filename, so a flat layout would have meant
+threading an image-dir option through the parser, the assembler, both entry points and
+the worker message protocol, plus percent-encoding link paths for names with spaces.
+
+`meta.json.engine` labels the path honestly: `python-docling-bootstrap` (oracle) vs `onnx-portable` (shipping engine). Both write the same folder; the TS engine adds `model`, `timings_ms`, and `execution_providers` fields rather than inventing a parallel layout. Both also record `md_path`, since the markdown filename is no longer a constant readers can join on.
 
 ---
 
@@ -36,8 +51,9 @@ out/<Paper Title>/  # folder named from the extracted title — drops into a vau
 ### Tasks
 
 - [x] uv project: `pyproject.toml`, `src/pdf2md/`, `pdf2md` entry point (`convert`, `version`).
-- [x] `convert` always writes `document.md` + `images/` + `meta.json`; output folder is named
-      from the extracted title; `document.md` opens with Obsidian-style YAML properties.
+- [x] `convert` always writes `<stem>.md` + `images/` + `meta.json` into a package folder
+      named from the source PDF; the markdown opens with Obsidian-style YAML properties.
+      (Originally title-named; amended 2026-07-26 — see the contract note above.)
 - [x] Figures: extracted to `images/`, referenced inline with captions.
 - [x] Tables: Markdown tables. (HTML fallback for row/col spans: pending — no fixture has hit it yet.)
 - [x] Math: `$$LaTeX$$` via Docling formula enrichment (`--no-formulas` to disable) + MathJax-repair
@@ -63,7 +79,7 @@ out/<Paper Title>/  # folder named from the extracted title — drops into a vau
 ```bash
 uv sync
 uv run pdf2md convert fixtures/attention.pdf --out out/attention
-open out/attention/document.md   # or open the folder as an Obsidian vault
+open out/attention/attention.md  # or open the folder as an Obsidian vault
 uv run pytest -q
 ```
 
@@ -132,7 +148,7 @@ npm run cli -- convert ../fixtures/attention.pdf --out out/   # downloads model 
 ### Gate 2 — "TS engine writes a real package"
 | Check | Pass? |
 |-------|-------|
-| `pdf2md-js convert` writes `document.md` + `images/` + `meta.json` (`engine: onnx-portable`) | ✅ |
+| `pdf2md-js convert` writes `<stem>.md` + `images/` + `meta.json` (`engine: onnx-portable`) | ✅ |
 | Offline unit tests green (DocTags parser, MathJax repairs) | ✅ |
 | One fixture converts end-to-end; math as `$$LaTeX$$`, headings hierarchical | ✅ page 1 (figures/full-doc → M3) |
 | `meta.json` records model, per-stage timings, execution providers | ✅ |
@@ -569,5 +585,6 @@ comes. Nothing before that gates on mobile.
 | 2026-07-24 | M4 | — | Plugin install workflow (`ab55dd2`: dist/ + install.mjs). Live-in-Obsidian debugging: fixed transformers backend selection (WebGPU now chosen, `c583fab`); **blocked** on onnxruntime-web threaded-wasm doing `import('worker_threads')` in the renderer (emscripten Node mis-detection). Build-time glue patch attempted, didn't fire — WIP. Diagnosis + candidate fixes logged in M4. |
 | 2026-07-25 | M4 | — | **"WebGPU fails after a few pages" solved — it was never WebGPU.** pdf.js schedules page-raster continuations through `requestAnimationFrame`, which Chromium never fires in a hidden document, so `page.render()` parked forever whenever Obsidian was minimised/backgrounded (0% CPU, no error). Bisected in a hidden renderer: `getDocument` 137 ms, `getPage` 1 ms, **`page.render` timed out at 120 s**, same page renders in **192 ms** with rAF shimmed. Fixed by `withTimerScheduling()` (`browser/pdf.ts`); no-op in Node, which is why the CPU suite always passed and why this was unreproducible there by construction. Also disproved the "cost per page climbs steeply on WebGPU" note: token-capped, 8 pages are flat within ±4% (RSS within 2%), Node CPU likewise. Prefill (~15 s/page) dominates; decode ~24 tok/s. |
 | 2026-07-25 | — | — | **Nougat spike sketched** (`docs/spike-nougat.md`, perf doc §4c): `facebook/nougat-small` as a cheaper VLM. Proposal only — nothing measured yet beyond published configs and the HF export inventory. Phase gates and kill criteria written down first, so a negative result is publishable the way §4a's LiteRT verdict was. |
+| 2026-07-26 | — | — | **Artifact contract amended: packages are named from the source PDF, not the extracted title.** `1706.03762v7.pdf` → `1706.03762v7/1706.03762v7.md` + `images/` + `meta.json`. The title varied by engine and by run and discarded the identifier the reader filed the paper under, and a generic `document.md` made every converted note in a vault share one name. Title still lives in the frontmatter and `meta.title`. `images/` deliberately stays *inside* the package folder: a flat `<stem>.images/` would have needed the hardcoded `images/` prefix in `doctags.ts` threaded through the parser, assembler, both entry points and the worker protocol, plus link percent-encoding — so this shape changes the three writers only and leaves the pipeline untouched (offline tests pass unedited). `meta` gains `md_path` so readers stop joining on a filename that is no longer constant; the title sanitizers are deleted. All three engines. |
 | 2026-07-25 | M4 | — | **Inference moved into a worker** (`plugin/worker.ts`, own bundle, blob-URL start, single-use so ORT's leftovers die with the thread). Main-thread lag during conversion drops from p95 17 ms / 8 stalls >100 ms to **p95 1.1 ms / zero**, for ~5% of throughput; settled renderer RSS across three conversions ends at 1.0 GB instead of 2.9 GB; cancel settles in 74 ms instead of ~500 ms. Also disproved the accumulation blocker: on WebGPU memory **plateaus** after the first conversion in both modes — the 2528→5156→7313 MB runaway was the Node/CPU path. Nearly shipped a silent regression on the way: rendering without a `document` needs `disableFontFace`, which makes pdf.js rasterize the standard 14 fonts itself and **drop glyphs one by one** without `standardFontDataUrl` — a page with holes in the text, no error, only slightly short output (7172 vs 7207 chars). `loadPdfBrowser` now throws instead. `attention` re-verified end-to-end on the worker path: **8/8 checks**, numeric table cells intact, same guard-firing pages as the CPU oracle. |
 | 2026-07-25 | M4 | — | **Progress UI + cancel.** `assembleDocument` emitted nothing between start and finish, so the plugin's Notice froze on "Downloading model … 100%" for the whole run — no UI could have shown progress. Added `ConvertProgress` ticks, an abort signal honoured between pages *and* between decode steps, and a progress dialog (page, live token count, elapsed, ETA, cancel) that detaches to the status bar so the vault stays readable. Cancel settles in ~500 ms mid-page. Bar interpolates within a page on a running per-page average with an asymptotic tail — a linear-with-cap version froze for 51 s when a page overran its estimate. Verified live: 41 distinct bar values in 41 samples, monotonic, no freeze. |

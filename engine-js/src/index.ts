@@ -2,8 +2,8 @@
  * pdf2md portable engine (TypeScript + ONNX) — Node entry.
  *
  * Public API: convertPdf(pdfPath, outParent, opts) -> Meta.
- * Produces the frozen artifact contract — out/<Title>/document.md + images/ +
- * meta.json — identical to the Python bootstrap, labelled engine "onnx-portable".
+ * Produces the frozen artifact contract — out/<pdf-stem>/<pdf-stem>.md + images/
+ * + meta.json — identical to the Python bootstrap, labelled engine "onnx-portable".
  *
  * The conversion pipeline itself lives in core/convert.ts (platform-agnostic);
  * this file is the Node adapter: pdf.js via @napi-rs/canvas, onnxruntime-node
@@ -14,7 +14,6 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { basename, extname, join, resolve } from "node:path";
 
 import { assembleDocument } from "./core/convert.js";
-import { sanitizeDirname } from "./frontmatter.js";
 import { ENGINE_ID, type Meta } from "./meta.js";
 import { loadPdf } from "./pdf.js";
 import { loadVlm, type VlmOptions } from "./vlm.js";
@@ -44,13 +43,17 @@ export async function convertPdf(
   const loadMs = Date.now() - t0;
   const vlm = await loadVlm(opts.vlm);
 
-  const fallback = basename(pdfPath, extname(pdfPath));
+  // The package is named from the source filename, not the extracted title: it is
+  // the identifier the reader filed the paper under, it is stable across engines
+  // and runs, and it keeps `document.md` from being every note's name in a vault.
+  // The title still lives in the frontmatter and in `meta.title`.
+  const stem = basename(pdfPath, extname(pdfPath));
   let doc;
   try {
     doc = await assembleDocument(pdf, vlm, {
       maxPages: opts.maxPages,
       sourceLabel: resolve(pdfPath),
-      titleFallback: fallback,
+      titleFallback: stem,
       ocr,
     });
   } finally {
@@ -58,7 +61,8 @@ export async function convertPdf(
     await pdf.destroy();
   }
 
-  const outDir = join(outParent, sanitizeDirname(doc.title) || fallback);
+  const outDir = join(outParent, stem);
+  // Recursive, so this creates outDir too — the only place either is created.
   const imagesDir = join(outDir, "images");
   await mkdir(imagesDir, { recursive: true });
 
@@ -69,12 +73,14 @@ export async function convertPdf(
     imageCount++;
   }
 
-  await writeFile(join(outDir, "document.md"), doc.markdown, "utf-8");
+  const mdPath = join(outDir, `${stem}.md`);
+  await writeFile(mdPath, doc.markdown, "utf-8");
 
   const meta: Meta = {
     source: pdfPath,
     title: doc.title,
     out_dir: outDir,
+    md_path: mdPath,
     engine: ENGINE_ID,
     engine_version: VERSION,
     model: doc.model,
