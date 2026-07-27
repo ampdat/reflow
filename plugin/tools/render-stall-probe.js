@@ -8,7 +8,7 @@
  *
  *   node tools/obsidian-drive.mjs eval-file tools/render-stall-probe.js
  */
-const { pdfjs, readBinary } = window.__pdf2md;
+const { pdfjs, readBinary } = window.__reflow;
 
 const steps = [];
 const say = (m) => console.log(`[stall-probe] ${m}`);

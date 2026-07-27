@@ -1,6 +1,10 @@
-# pdf-to-md
+# Reflow
 
 **Local, private PDF → clean Markdown. Figures, tables, and math survive. Nothing uploads.**
+
+*(The repository is still named `pdf-to-md`; the shipping product — the Obsidian
+plugin in [`plugin/`](./plugin) — is **Reflow**. The name says what it does to a
+two-column paper, and it survives the move to EPUB and e-readers in M5.)*
 
 Convert a PDF on your Mac and get a Markdown package your Obsidian vault reads beautifully — then, from that same clean core, an EPUB for your e-reader. Conversion is always local; delivery to each reader takes the smoothest path that reader allows.
 
@@ -93,9 +97,12 @@ Quality is measured, not vibed. `fixtures/` holds a curated paper set — attent
 - ✅ **M1 (Python bootstrap, now frozen reference oracle):** the artifact contract + engine-independent fixture suite.
 - ✅ **M2 (`engine-js/`, pure JS):** pdf.js + granite-docling-258M ONNX (transformers.js) + a hand-written DocTags→Markdown parser + a degenerate-generation guard. Offline unit-tested (20/20).
 - ✅ **M3 (parity):** all 4 fixtures × TS-CPU vs Python oracle pass **all 7 ground-truth checks**; numeric table cells intact; equation-dense vae handled (35 vs 31 math blocks). fp32 everywhere — any f16 dtype garbles. **WebGPU and native CPU turn out to be within the same order** (an early "~6× CPU" figure did not reproduce; see PLAN.md), so WebGPU stays for the pure-JS distribution story rather than for speed.
-- 🔨 **M4 (Obsidian plugin):** converts end-to-end on WebGPU in Obsidian — right-click a PDF, get a vault package. A progress dialog reports page, tokens, elapsed and ETA, cancels mid-page, and detaches to the status bar so you can keep reading. **The "conversion dies after a few pages" bug is fixed**: pdf.js schedules page rasterisation through `requestAnimationFrame`, which Chromium never fires while a window is hidden, so conversions parked forever the moment you switched away — nothing to do with WebGPU. **Inference now runs in a worker**, so the UI never stutters (main-thread lag p95 1.1 ms vs 17 ms, zero stalls over 100 ms vs 8) and the model's memory is reclaimed by terminating the thread after each conversion (1.0 GB vs 2.9 GB settled) — the feared unbounded memory growth turned out to be the Node/CPU path, not this one. Remaining before Gate 4: first-run model download UX and weight caching.
+- 🔨 **M4 (Obsidian plugin):** converts end-to-end on WebGPU in Obsidian — right-click a PDF, get a vault package. A progress dialog reports page, tokens, elapsed and ETA, cancels mid-page, and detaches to the status bar so you can keep reading. **The "conversion dies after a few pages" bug is fixed**: pdf.js schedules page rasterisation through `requestAnimationFrame`, which Chromium never fires while a window is hidden, so conversions parked forever the moment you switched away — nothing to do with WebGPU. **Inference now runs in a worker**, so the UI never stutters (main-thread lag p95 1.1 ms vs 17 ms, zero stalls over 100 ms vs 8) and the model's memory is reclaimed by terminating the thread after each conversion (1.0 GB vs 2.9 GB settled) — the feared unbounded memory growth turned out to be the Node/CPU path, not this one. The plugin is now **packaged for the community directory** as **Reflow**: the conversion worker and pdf.js's parsing worker are inlined into `main.js` (Obsidian installs only `main.js` + `manifest.json` + `styles.css`, so a fourth file silently downgraded every directory install to main-thread conversion), no executable code is fetched at runtime, and `eslint-plugin-obsidianmd` — the same check the directory runs on every published version — is error-clean. Remaining before Gate 4: first-run model download UX and weight caching.
 - 📄 Full engineering log — CPU/WebGPU dtype findings, the LiteRT.js evaluation, the nougat spike sketch, per-target notes: [docs/perf-and-portability.md](./docs/perf-and-portability.md).
 
 ## License
 
-TBD for application code. Third-party models and libraries retain their own licenses.
+**MIT** — see [LICENSE](./LICENSE). It matches Docling, the reference oracle this
+was built against, and keeps every shipped component permissive: pdf.js and
+transformers.js are Apache-2.0, onnxruntime-web is MIT, and granite-docling-258M
+is Apache-2.0. Third-party models and libraries retain their own licenses.

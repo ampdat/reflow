@@ -12,6 +12,9 @@
  * cannot be created.
  */
 
+// @ts-ignore — virtual module, see plugin/virtual.d.ts
+import WORKER_SOURCE from "virtual:worker";
+
 import type { ConvertProgress } from "../engine-js/src/core/convert.js";
 import type { AssembledDocument } from "../engine-js/src/core/types.js";
 import type { ModelProgress, WorkerMessage, WorkerRequest } from "./worker-protocol.js";
@@ -21,11 +24,15 @@ export interface WorkerConvertOptions {
   sourceLabel: string;
   titleFallback: string;
   perPageTimeoutMs: number;
-  device?: string;
+  /** Ordered compute backends to try; see `browser/device.ts`. */
+  devices?: string[];
+  shaderF16?: boolean;
   signal?: AbortSignal;
   onProgress?: (p: ConvertProgress) => void;
   onStep?: (tokens: number) => void;
   onModelProgress?: (p: ModelProgress) => void;
+  /** Which backend the model actually loaded on, once it has. */
+  onDevice?: (info: { device: string; requested: string[]; fellBack: boolean }) => void;
   /** Environment the worker reported on boot — logged once, for diagnosis. */
   onReady?: (env: Record<string, unknown>) => void;
 }
@@ -35,15 +42,18 @@ export interface WorkerConvertOptions {
  *
  * A worker script must be same-origin, and the plugin folder is not served over
  * one — Obsidian's renderer runs at `app://obsidian.md` while the code lives in
- * the vault. Reading the bundle through the vault adapter and handing it to the
- * worker as a blob sidesteps that entirely, and is how Obsidian plugins
+ * the vault. A blob sidesteps that entirely, and is how Obsidian plugins
  * conventionally ship workers.
+ *
+ * The source is inlined into main.js at build time rather than read back from
+ * the plugin folder, because Obsidian's community installer downloads only
+ * main.js, manifest.json and styles.css. A fourth file exists on a developer's
+ * machine and on nobody else's, and its absence degrades silently: every
+ * conversion falls back to the main thread.
  */
-export async function workerBlobUrl(
-  readPluginFile: (name: string) => Promise<string>,
-): Promise<string> {
-  const source = await readPluginFile("worker.js");
-  if (!source.trim()) throw new Error("worker.js is empty");
+export function workerBlobUrl(): string {
+  const source = WORKER_SOURCE as string;
+  if (!source.trim()) throw new Error("bundled worker source is empty");
   return URL.createObjectURL(new Blob([source], { type: "text/javascript" }));
 }
 
@@ -52,7 +62,7 @@ export async function convertPdfInWorker(
   data: Uint8Array,
   opts: WorkerConvertOptions,
 ): Promise<AssembledDocument> {
-  const worker = new Worker(workerUrl, { name: "pdf-to-md" });
+  const worker = new Worker(workerUrl, { name: "reflow" });
 
   // A copy, because the buffer is transferred: `data` comes from
   // `vault.readBinary` and detaching it would surprise the caller.
@@ -80,7 +90,8 @@ export async function convertPdfInWorker(
                   sourceLabel: opts.sourceLabel,
                   titleFallback: opts.titleFallback,
                   perPageTimeoutMs: opts.perPageTimeoutMs,
-                  device: opts.device,
+                  devices: opts.devices,
+                  shaderF16: opts.shaderF16,
                 },
               },
               [buffer],
@@ -94,11 +105,25 @@ export async function convertPdfInWorker(
           case "model":
             opts.onModelProgress?.(msg.p);
             break;
+          case "device":
+            opts.onDevice?.({
+              device: msg.device,
+              requested: msg.requested,
+              fellBack: msg.fellBack,
+            });
+            break;
           case "step":
             opts.onStep?.(msg.tokens);
             break;
           case "log":
-            console[msg.level](`[pdf-to-md worker] ${msg.text}`);
+            // Warnings and errors from the worker are a user's only view into a
+            // conversion that went wrong — the thread has no other way to
+            // reach the console — so they always come through. Plain logs are
+            // diagnostic chatter and stay in development builds.
+            /* eslint-disable obsidianmd/rule-custom-message -- worker diagnostics channel */
+            if (msg.level !== "log") console[msg.level](`[reflow worker] ${msg.text}`);
+            else if (__REFLOW_DEV__) console.log(`[reflow worker] ${msg.text}`);
+            /* eslint-enable obsidianmd/rule-custom-message */
             break;
           case "done":
             resolve(msg.doc);

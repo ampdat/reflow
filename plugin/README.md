@@ -1,27 +1,50 @@
-# PDF to Markdown — Obsidian plugin (desktop)
+# Reflow — Obsidian plugin (desktop)
 
 Right-click a PDF in your vault → **Convert to Markdown**. Runs
 [granite-docling-258M](https://huggingface.co/onnx-community/granite-docling-258M-ONNX)
 on **WebGPU** in Obsidian's renderer via the shared [`engine-js`](../engine-js) core
 (pdf.js + transformers.js + the DocTags→Markdown parser). No server, no API keys,
-nothing uploads. Output is a vault package named from the PDF:
-`1706.03762v7/1706.03762v7.md` + `images/` + `meta.json`.
+no page limits, and the PDF never leaves your machine. Output is a vault package
+named from the PDF: `1706.03762v7/1706.03762v7.md` + `images/` + `meta.json`.
 
 This is the M4 shell over the fixture-validated engine (see [../PLAN.md](../PLAN.md)).
 `main.ts` is only Obsidian wiring; the whole conversion pipeline is `engine-js`.
+
+## Network use
+
+Conversion is local. Three things are still fetched, once each, and cached — all
+of them from pinned versions, none of them your document:
+
+| What | From | When |
+|---|---|---|
+| Model weights (~1 GB, fp32) | `huggingface.co` | First conversion |
+| onnxruntime-web's WebAssembly runtime (~24 MB) | `cdn.jsdelivr.net` | First conversion |
+| pdf.js standard-14 fonts and CMap packs | `cdn.jsdelivr.net` | On demand, per document |
+
+pdf.js's **parsing worker is bundled**, not fetched, so no executable JavaScript
+is downloaded at runtime. The wasm runtime is the one exception and it is
+unavoidable: it *is* the inference engine, and at 24 MB it cannot reasonably be
+inlined into `main.js`. Bundling the fonts and CMaps (2.4 MB, mostly CJK packs
+most readers never touch) is a possible follow-up; see [`assets.ts`](assets.ts).
+
+Nothing else talks to the network: no telemetry, no accounts, no update check.
 
 ## Build & install
 
 ```bash
 cd plugin
 npm install                 # once
-npm run deploy              # build → dist/, then install into the vault
+npm run deploy              # dev build → dist/, then install into a vault
 ```
 
-- `npm run build` — bundle `main.ts` (+ engine core, transformers.js, pdf.js) → `dist/{main.js,worker.js,manifest.json}`.
-- `npm run install:vault` — copy `dist/` into the vault's `.obsidian/plugins/pdf-to-md/` **without rebuilding**.
-- `npm run deploy` — both.
-- `npm run dev` — esbuild watch (for live iteration).
+- `npm run build` — release bundle → `dist/{main.js,manifest.json,styles.css}`,
+  which is **exactly** the file set Obsidian's community installer downloads.
+- `npm run build:dev` — same, plus the debug shim (see below).
+- `npm run install:vault` — copy `dist/` into a vault's `.obsidian/plugins/reflow/`
+  **without rebuilding**.
+- `npm run deploy` — dev build + install.
+- `npm run dev` — esbuild watch.
+- `npm run lint` / `npm run typecheck` — the pre-release gates; see *Packaging* below.
 
 Target vault resolution (for `install:vault` / `deploy`): `$OBSIDIAN_VAULT`, else
 the first CLI arg, else the default in `install.mjs`. Examples:
@@ -36,17 +59,89 @@ or if it's already enabled, **reload** (Cmd+R) / toggle it off·on to pick up th
 
 ## First run
 
-- Requires a **WebGPU-capable** Obsidian (recent Electron; `isDesktopOnly`).
-- On first convert it **downloads model weights (~1 GB, fp32)** from the HF hub with
-  a progress notice, then caches them in the renderer. Later converts skip the download.
-- pdf.js worker + ORT wasm are fetched from a CDN on first use.
+- The first convert downloads model weights with a progress dialog, then caches
+  them in the renderer. Later converts skip the download.
+- Reflow probes the machine before it starts and picks a backend; see below.
+
+## Compute backends
+
+Reflow probes for a GPU before every conversion (an adapter request — no
+download) and runs on the best backend it finds, falling back rather than
+failing. The *Compute backend* setting forces a choice; **Automatic** is
+WebGPU → CPU.
+
+| Backend | Status | Notes |
+|---|---|---|
+| **WebGPU** | Default where available | Enabled by default on Windows (D3D12) and macOS (Metal) |
+| **CPU (wasm)** | Automatic fallback | Works, slower, and **cannot convert every page** — see below |
+| **WebNN** | Opt-in only | `navigator.ml` is absent unless Obsidian is launched with `--enable-features=WebMachineLearningNeuralNetwork`, which a plugin cannot set |
+
+**Linux** is the case to watch: Chromium still gates WebGPU behind a flag there,
+so `requestAdapter()` returns null and Reflow drops to the CPU. The warning says
+so, and names the flag.
+
+### The CPU fallback is real, but it is not a guarantee
+
+Measured on an M4 (both in the worker and in the renderer, on fresh windows):
+
+| Page | Tiles / prompt tokens | WebGPU | CPU (wasm, 4 threads) |
+|---|---|---|---|
+| `bert.pdf` p1 | 13 / 878 | 34 s | **60 s**, 20.4 tok/s |
+| `attention.pdf` p1 | 17 / 1142 | 28 s | **fails in 5 s** — `std::bad_alloc` |
+
+So the CPU path is only ~1.7× slower than WebGPU here — consistent with the
+earlier finding that the two are within the same order on this machine — but it
+has a hard ceiling. The cause is upstream of the model: the Idefics3 processor
+splits a page into 512-px tiles by aspect ratio, and the two documents rasterize
+to nearly the same size (1191×1684 vs 1224×1584) yet tile differently.
+Seventeen tiles of fp32 vision activations plus ~1 GB of fp32 weights exceed
+WebAssembly's 4 GB address space; thirteen fit.
+
+The plugin says this plainly when it happens rather than surfacing
+`std::bad_alloc`. **Not yet tried:** rendering at a lower scale on the CPU path
+to cut the tile count, which would trade fidelity for headroom and needs to be
+priced against the fixture suite before it becomes a default.
+
+## Packaging for the community directory
+
+Obsidian's installer downloads **only** `main.js`, `manifest.json` and
+`styles.css` from a GitHub release. Two consequences shape this build:
+
+1. **The conversion worker is inlined into `main.js`** as text at build time and
+   started from a blob URL ([`worker-host.ts`](worker-host.ts)). It used to be
+   read back from the plugin folder at runtime, which works when you copy a
+   folder and fails silently for everyone who installs normally — the plugin
+   would quietly convert on the main thread forever. `worker.ts` is bundled to
+   `build/worker.js` (scratch, gitignored) and inlined from there.
+2. **pdf.js's parsing worker is inlined too** ([`assets.ts`](assets.ts)), for the
+   remote-code reason above. `main.js` is ~4.7 MB as a result: the main bundle,
+   the worker bundle, and two copies of the pdf.js worker (the renderer path and
+   the conversion worker each need one).
+
+`npm run lint` runs [`eslint-plugin-obsidianmd`](https://github.com/obsidianmd/eslint-plugin) —
+the same guideline checks the directory's automated review applies to *every*
+published version, not just the first. It must be error-clean before a release.
+The type-aware `typescript-eslint` rules that ship in the same preset are set to
+warn: every one of them lands on an untyped third-party surface (transformers.js's
+`env` bag, ORT's `wasmPaths`, `catch (e: any)`), and the reasoning is recorded in
+[`eslint.config.mjs`](eslint.config.mjs).
+
+Releases are cut by tagging: [`.github/workflows/release.yml`](../.github/workflows/release.yml)
+verifies the tag equals `manifest.json`'s version (no `v` prefix — a mismatch
+fails silently in the directory), lints, typechecks, builds, and attaches the
+three files as a draft release.
+
+**Still to do before submitting:** the plugin needs to live in a public repo with
+`manifest.json` at its *root* — the directory reads the manifest at the HEAD of
+the default branch — and submission happens at
+[community.obsidian.md](https://community.obsidian.md) (since May 2026; the old
+`obsidian-releases` pull request is gone).
 
 ## Conversion runs in a worker
 
-The engine runs in a dedicated worker ([`worker.ts`](worker.ts), bundled to
-`dist/worker.js` and started from a blob URL by [`worker-host.ts`](worker-host.ts)),
-not on the renderer's main thread. Measured on 2 pages of `attention.pdf`, same
-build, only this setting changed:
+The engine runs in a dedicated worker ([`worker.ts`](worker.ts)), not on the
+renderer's main thread. Measured on 2 pages of `attention.pdf`, same build, only
+this setting changed:
 
 | | worker | main thread |
 |---|---|---|
@@ -75,13 +170,14 @@ font stack, so it needs `standardFontDataUrl`. Without it pdf.js does not fail �
 it warns once per glyph (`getPathGenerator - ignoring character`) and rasterizes
 the page **with holes in the text**, which reaches the VLM as a page that simply
 says less. `loadPdfBrowser` now throws rather than render without it, and the
-pinned URLs live in [`pdfjs-cdn.ts`](pdfjs-cdn.ts).
+pinned URLs live in [`assets.ts`](assets.ts).
 
 Two smaller notes from wiring this up: `requestAnimationFrame` *does* exist in
 Obsidian's worker global and does fire, so pdf.js's rAF scheduling shim stays on
 there; and pdf.js reports *"Setting up fake worker"* inside the worker (it can't
-spawn its nested parsing worker), so PDF parsing shares the conversion thread —
-still off the main thread, just not parallel with inference.
+spawn its nested parsing worker, so it `import()`s the same bundled blob URL
+instead), so PDF parsing shares the conversion thread — still off the main
+thread, just not parallel with inference.
 
 ## Running ONNX inside Obsidian: the two Node-detection traps
 
@@ -120,7 +216,8 @@ fetched from a CDN at runtime and never enters the bundle. The fix (see
 [`ort-env.ts`](ort-env.ts)) inlines a **build-time-patched copy** of the glue as text,
 serves it from a blob URL, and overrides `wasmPaths` with `{ mjs, wasm }`. The build
 fails loudly if that epilogue ever stops matching, so a future ORT bump can't silently
-reintroduce the break.
+reintroduce the break. On the currently pinned transformers/ORT the upstream guard is
+present and the patch is a no-op — the build says so, and the override stays dormant.
 
 ## Debugging: driving Obsidian headlessly
 
@@ -134,8 +231,8 @@ context — streaming the renderer console back to the terminal.
 ```bash
 node tools/obsidian-drive.mjs up                # launch + open the scratch vault
 node tools/obsidian-drive.mjs reload            # pick up a new build, re-enable plugin
-node tools/obsidian-drive.mjs eval 'return __pdf2md.envReport()'
-node tools/obsidian-drive.mjs run 'return await __pdf2md.convertPath("attention.pdf")'
+node tools/obsidian-drive.mjs eval 'return __reflow.envReport()'
+node tools/obsidian-drive.mjs run 'return await __reflow.convertPath("attention.pdf")'
 node tools/obsidian-drive.mjs console 60        # tail the renderer console
 node tools/obsidian-drive.mjs down
 ```
@@ -145,8 +242,11 @@ open for the whole job, so a dropped socket loses the reply and the caller hangs
 even though the work finished. `run` stores the promise in the page and polls,
 which also gives progress while it works.
 
-The plugin exposes a debug shim at `window.__pdf2md` (see [`probe.ts`](probe.ts)) —
-usable from the devtools console too:
+**The shim is development-only.** `npm run build:dev` (and `deploy`, and `dev`)
+include [`probe.ts`](probe.ts); `npm run build` resolves it to
+[`probe-stub.ts`](probe-stub.ts) instead, so a released build has no `window`
+global and doesn't carry the second standalone onnxruntime-web the smoke test
+uses. Reach it at `window.__reflow`:
 
 - `envReport()` — what the renderer looks like to Node-sniffing libraries
   (`process.type`, `process.versions.node`, WebGPU, SharedArrayBuffer, wasm SIMD).
@@ -174,8 +274,7 @@ Note when writing probes: pdf.js **transfers** the input buffer to its worker, s
 a `Uint8Array` fed to two consumers arrives detached and empty at the second —
 and pdf.js answers that by hanging, not throwing. Pass a fresh `.slice()` each time.
 
-A full loop is `npm run build && npm run install:vault && node tools/obsidian-drive.mjs reload`,
-then an `eval`.
+A full loop is `npm run deploy && node tools/obsidian-drive.mjs reload`, then an `eval`.
 
 ## Other known gaps (tracked in ../PLAN.md, M4)
 
@@ -183,12 +282,23 @@ then an `eval`.
   a smaller quantized build is an open M3/M4 item.
 - Figure over-detection and OTSL merged-cell spans are engine-level gaps surfaced by
   the fixture suite — the plugin inherits them (both are warned, not silent).
-- Not yet submitted to the community catalog; load as an unpacked plugin for now.
+- Not yet submitted to the community directory; load as an unpacked plugin for now.
+- **Windows and Linux are untested.** The backend probe, the CPU fallback and the
+  `shader-f16` dtype switch were all written for hardware nobody here has; the
+  selection logic is unit-tested against fake navigators (`test/device.test.ts`)
+  precisely because the real cases cannot be reproduced on this machine.
 
 ## Settings
 
+- **Compute backend** — Automatic (WebGPU → CPU), or force one; see above.
 - **Output folder** — vault folder for packages (empty = alongside the PDF).
 - **Max pages** — 0 = all; set small for a quick test.
 - **Per-page time limit** — generation for a page is cut off after this long and the
   page is flagged incomplete. Raise it for dense pages or a slower GPU.
 - **Convert in a background thread** — on by default; see above.
+
+## License
+
+MIT — see [../LICENSE](../LICENSE). Bundled third-party code keeps its own license
+(pdf.js and transformers.js Apache-2.0, onnxruntime-web MIT); granite-docling-258M
+is Apache-2.0.

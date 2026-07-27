@@ -76,7 +76,8 @@ export interface OrtEnvReport {
  */
 export function configureOrt(ortEnv: any, opts: { wasmUrl?: string } = {}): OrtEnvReport {
   // WebGPU compute needs no wasm threads, and single-threaded keeps ORT from
-  // preloading the glue as a worker script.
+  // preloading the glue as a worker script. `tuneOrtThreads` raises this when
+  // the CPU fallback is the one actually running.
   ortEnv.wasm.numThreads = 1;
   ortEnv.wasm.proxy = false;
 
@@ -94,4 +95,37 @@ export function configureOrt(ortEnv: any, opts: { wasmUrl?: string } = {}): OrtE
     numThreads: ortEnv.wasm.numThreads,
     glueBytes: (PATCHED_ORT_GLUE as string).length,
   };
+}
+
+/**
+ * Pick the wasm thread count for the backend that is about to run.
+ *
+ * On WebGPU the wasm module is only glue — the compute is on the GPU — so one
+ * thread is right and avoids ORT preloading the glue as a worker script. On the
+ * CPU fallback the opposite holds: the wasm module *is* the compute, and a
+ * single thread on a 258M-parameter fp32 VLM is the difference between slow and
+ * unusable.
+ *
+ * Threads need `SharedArrayBuffer`, which browsers gate behind cross-origin
+ * isolation; Obsidian's Node-integrated renderer has it regardless, but the
+ * check stays because a missing SAB makes ORT fail at init rather than fall
+ * back. Capped at 4: this competes with the UI thread and with whatever else the
+ * machine is doing, and the returns flatten well before core count.
+ *
+ * Must be called *before* the first session is created — ORT reads it when the
+ * wasm module initializes and ignores it afterwards.
+ */
+export function tuneOrtThreads(ortEnv: any, device: string): number {
+  let threads = 1;
+  if (device === "wasm" || device === "cpu") {
+    const cores = typeof navigator !== "undefined" ? (navigator.hardwareConcurrency ?? 1) : 1;
+    const threaded = typeof SharedArrayBuffer !== "undefined";
+    threads = threaded ? Math.max(1, Math.min(4, cores - 1)) : 1;
+  }
+  try {
+    ortEnv.wasm.numThreads = threads;
+  } catch {
+    /* an env that refuses the write just keeps its default */
+  }
+  return threads;
 }

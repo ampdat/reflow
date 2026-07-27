@@ -14,5 +14,5 @@
     // Bundler-mode resolution; point at it directly.
     "paths": { "onnxruntime-web": ["./node_modules/onnxruntime-web/types.d.ts"] }
   },
-  "include": ["main.ts", "probe.ts", "ort-env.ts", "virtual.d.ts", "../engine-js/src/**/*.ts"]
+  "include": ["*.ts", "../engine-js/src/**/*.ts"]
 }

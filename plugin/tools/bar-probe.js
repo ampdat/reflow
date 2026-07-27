@@ -7,11 +7,11 @@
  *
  *   node tools/obsidian-drive.mjs run-file tools/bar-probe.js
  */
-const s = window.__pdf2md.settings();
+const s = window.__reflow.settings();
 s.outputFolder = "bar-test";
 s.maxPages = 2;
 
-const p = window.__pdf2md.convertPath("bert.pdf");
+const p = window.__reflow.convertPath("bert.pdf");
 let result = null;
 p.then((r) => (result = r)).catch((e) => (result = { threw: String(e?.message ?? e) }));
 

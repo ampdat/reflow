@@ -56,5 +56,15 @@ export async function convertPdfBrowser(
 }
 
 export { loadPdfBrowser, type LoadPdfBrowserOptions } from "./pdf.js";
-export { createBrowserVlm, WEBGPU_DTYPE } from "./vlm.js";
+export { createBrowserVlm, dtypeForDevice, FP32_DTYPE, WEBGPU_DTYPE } from "./vlm.js";
+export {
+  deviceCandidates,
+  isSlowDevice,
+  probeDevices,
+  slowDeviceReason,
+  type ComputeDevice,
+  type DeviceNavigator,
+  type DevicePreference,
+  type DeviceProbe,
+} from "./device.js";
 export type { AssembledDocument, AssembledFigure } from "../core/types.js";

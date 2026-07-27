@@ -6,7 +6,7 @@ import { cpSync, existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-const PLUGIN_ID = "pdf-to-md";
+const PLUGIN_ID = "reflow";
 const DEFAULT_VAULT = join(
   homedir(),
   "Library/Mobile Documents/iCloud~md~obsidian/Documents/Aleph",
@@ -25,10 +25,9 @@ if (!existsSync(join(vault, ".obsidian"))) {
 }
 
 mkdirSync(dest, { recursive: true });
-// worker.js is read back at runtime from this folder and run as a blob URL —
-// see plugin/worker-host.ts. Without it the plugin falls back to converting on
-// the renderer's main thread.
-for (const f of ["main.js", "worker.js", "manifest.json"]) {
+// Exactly what Obsidian's community installer downloads — the conversion worker
+// is inlined into main.js, so there is no fourth file to forget.
+for (const f of ["main.js", "manifest.json", "styles.css"]) {
   cpSync(join("dist", f), join(dest, f));
 }
 

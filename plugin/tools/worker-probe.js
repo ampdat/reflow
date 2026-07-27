@@ -44,7 +44,7 @@ function lagSampler(periodMs = 50) {
   };
 }
 
-const api = window.__pdf2md;
+const api = window.__reflow;
 if (!api) throw new Error("plugin not loaded");
 
 const mode = globalThis.PDF2MD_PROBE_MODE ?? "worker";

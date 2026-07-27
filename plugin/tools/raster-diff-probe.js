@@ -17,7 +17,7 @@
 const FILE = "attention.pdf";
 const PAGES = [1, 4, 8]; // prose, equations, the BLEU results table
 
-const api = window.__pdf2md;
+const api = window.__reflow;
 if (!api) throw new Error("plugin not loaded");
 
 // A fresh copy per render: pdf.js transfers the input buffer to its worker, so
@@ -43,7 +43,7 @@ async function renderHere() {
 
 /** Render the same pages inside the conversion worker. */
 async function renderThere() {
-  const dir = app.plugins.plugins["pdf-to-md"].manifest.dir;
+  const dir = app.plugins.plugins["reflow"].manifest.dir;
   const src = await app.vault.adapter.read(dir + "/worker.js");
   const url = URL.createObjectURL(new Blob([src], { type: "text/javascript" }));
   const w = new Worker(url, { name: "raster-diff" });

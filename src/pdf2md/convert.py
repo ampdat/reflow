@@ -114,7 +114,7 @@ def _frontmatter(
     lines.append(f"pages: {pages}")
     if conversion_warnings:
         lines.append(f"conversion_warnings: {conversion_warnings}")
-    lines.extend(["tags:", "  - paper", "  - pdf-to-md", "---", ""])
+    lines.extend(["tags:", "  - paper", "  - reflow", "---", ""])
     return "\n".join(lines)
 
 

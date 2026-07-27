@@ -19,8 +19,15 @@ export interface WorkerConvertRequest {
     sourceLabel: string;
     titleFallback: string;
     perPageTimeoutMs: number;
-    /** transformers.js device, e.g. "webgpu". Overridable for A/B probing. */
-    device?: string;
+    /**
+     * Ordered compute backends to try, best first (see `browser/device.ts`).
+     * The renderer probes for these before starting, so the head of this list
+     * is normally the one that loads; the rest are insurance against a backend
+     * that advertises itself and then fails under load.
+     */
+    devices?: string[];
+    /** WebGPU adapter has `shader-f16` — decides the embedding dtype. */
+    shaderF16?: boolean;
   };
 }
 
@@ -63,6 +70,12 @@ export type WorkerMessage =
   /** Worker booted and its libraries evaluated; carries what it found. */
   | { type: "ready"; env: Record<string, unknown> }
   | { type: "progress"; p: ConvertProgress }
+  /**
+   * The backend the model actually loaded on. Sent once, after the load and
+   * before the first page, because that is the moment the host can still tell
+   * the user "this will take a while" before it takes a while.
+   */
+  | { type: "device"; device: string; requested: string[]; fellBack: boolean }
   | { type: "model"; p: ModelProgress }
   | { type: "step"; tokens: number }
   /** Renderer-side console mirror; worker consoles land on a separate CDP target. */

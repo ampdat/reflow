@@ -45,7 +45,7 @@ if (out.hasNavigatorML) {
 try {
   const ort =
     (typeof globalThis.ort !== "undefined" && globalThis.ort) ||
-    (typeof window !== "undefined" && window.__pdf2md ? window.__pdf2md.ort : null);
+    (typeof window !== "undefined" && window.__reflow ? window.__reflow.ort : null);
   if (ort?.InferenceSession) {
     // 94-byte Add model: C = A + B over a 1x4 float tensor.
     const b64 =

@@ -1,5 +1,7 @@
 node_modules/
 dist/
+# scratch bundle for the conversion worker, inlined into dist/main.js
+build/
 main.js
 main.js.map
 data.json

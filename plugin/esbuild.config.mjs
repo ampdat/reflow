@@ -1,15 +1,24 @@
 // Bundle main.ts (+ the engine-js core, transformers.js, pdf.js) into a single
-// CJS dist/main.js for Obsidian, and stage manifest.json alongside it so `dist/`
-// is a drop-in plugin folder. `obsidian` and `electron` are provided by the host.
+// CJS dist/main.js for Obsidian, and stage manifest.json + styles.css alongside
+// it. `obsidian` and `electron` are provided by the host.
 //
-// worker.ts gets its own IIFE bundle (dist/worker.js) — the conversion runs off
-// the main thread, and a worker script cannot be CJS or share main.js's module
-// scope. It is loaded at runtime from the plugin folder, not inlined, so
-// Obsidian doesn't parse a second copy of transformers.js at startup.
+// `dist/` deliberately holds *exactly* the three files Obsidian's community
+// installer downloads (main.js, manifest.json, styles.css) — anything else in
+// the plugin folder exists on a developer's machine and nowhere else.
+//
+// That constraint is why worker.ts is bundled to `build/worker.js` (scratch,
+// gitignored) and then inlined into main.js as text: the conversion worker used
+// to be read back from the plugin folder at runtime, which works for a folder
+// copy and silently degrades to main-thread conversion for every user who
+// installs from the directory. pdf.js's parsing worker is inlined the same way,
+// so no executable code is fetched over the network. See plugin/assets.ts.
 import esbuild from "esbuild";
 import { copyFileSync, mkdirSync, readFileSync } from "node:fs";
 
 const watch = process.argv.includes("--watch");
+// Dev builds keep the debug shim (plugin/probe.ts) and its standalone
+// onnxruntime-web copy; release builds resolve it to a stub instead.
+const dev = watch || process.argv.includes("--dev");
 
 // onnxruntime-web's standalone emscripten glue ends with a *top-level* await that
 // has no renderer guard:
@@ -58,7 +67,7 @@ const inlinePatchedOrtGlue = {
             `onnxruntime-web changed; re-check the patch in plugin/ort-env.ts.`,
         );
       }
-      const patched = source.replace(GLUE_EPILOGUE, "// [pdf-to-md] node pthread bootstrap removed");
+      const patched = source.replace(GLUE_EPILOGUE, "// [reflow] node pthread bootstrap removed");
       // One `worker_threads` reference legitimately survives: the one inside the
       // module body, which *is* guarded by `"renderer" != process.type` and so is
       // unreachable here. Anything else means the patch missed something.
@@ -76,6 +85,49 @@ const inlinePatchedOrtGlue = {
   },
 };
 
+/**
+ * Serve `virtual:<name>` as the text of a file on disk.
+ *
+ * `watchFiles` is what makes the two-bundle arrangement work under `--watch`:
+ * main.js is rebuilt whenever build/worker.js is rewritten, so editing worker.ts
+ * still lands in the installed plugin without a manual ordering dance.
+ */
+const inlineTextFiles = (mapping) => ({
+  name: "inline-text-files",
+  setup(build) {
+    const filter = new RegExp(`^virtual:(${Object.keys(mapping).join("|")})$`);
+    build.onResolve({ filter }, (args) => ({
+      path: args.path.slice("virtual:".length),
+      namespace: "inline-text",
+    }));
+    build.onLoad({ filter: /.*/, namespace: "inline-text" }, (args) => {
+      const file = mapping[args.path];
+      const contents = readFileSync(file, "utf8");
+      if (!contents.trim()) throw new Error(`[inline-text] ${file} is empty`);
+      return { contents, loader: "text", watchFiles: [file] };
+    });
+  },
+});
+
+/**
+ * Release builds swap plugin/probe.ts for a no-op stub.
+ *
+ * The shim is developer tooling — it hangs an API off `window` and pulls in a
+ * second, standalone onnxruntime-web for the ORT smoke test. Neither belongs in
+ * a build users install, and the automated review flags the global.
+ */
+const stubProbeInRelease = {
+  name: "stub-probe-in-release",
+  setup(build) {
+    if (dev) return;
+    build.onResolve({ filter: /(^|\/)probe\.js$/ }, () => ({
+      path: new URL("probe-stub.ts", import.meta.url).pathname,
+    }));
+  },
+};
+
+const PDFJS_WORKER = "node_modules/pdfjs-dist/build/pdf.worker.min.mjs";
+
 // Obsidian's renderer has Node integration, so transformers.js sees
 // process.release.name === "node" and picks its cpu-only onnxruntime-node
 // backend — no WebGPU. This banner runs before any bundled module evaluates and
@@ -83,9 +135,10 @@ const inlinePatchedOrtGlue = {
 // and offers the onnxruntime-web + WebGPU backend. main.ts restores it right after.
 // process.release is often not reassignable in Electron, so mutate `.name`
 // directly, then fall back to defineProperty on the name, then on release.
-const forceWebBackend = `(function(){try{var p=(typeof process!=="undefined")?process:null;if(p&&p.release&&p.release.name==="node"){globalThis.__pdf2md_origRelease=p.release.name;try{p.release.name="obsidian";}catch(e){}if(p.release.name==="node"){try{Object.defineProperty(p.release,"name",{value:"obsidian",configurable:true,writable:true});}catch(e){}}if(p.release.name==="node"){try{Object.defineProperty(p,"release",{value:Object.assign({},p.release,{name:"obsidian"}),configurable:true,writable:true});}catch(e){}}globalThis.__pdf2md_spoofResult=p.release.name;}else{globalThis.__pdf2md_spoofResult=p&&p.release?p.release.name:"no-process";}}catch(e){globalThis.__pdf2md_spoofResult="err:"+(e&&e.message);}})();`;
+const forceWebBackend = `(function(){try{var p=(typeof process!=="undefined")?process:null;if(p&&p.release&&p.release.name==="node"){globalThis.__reflow_origRelease=p.release.name;try{p.release.name="obsidian";}catch(e){}if(p.release.name==="node"){try{Object.defineProperty(p.release,"name",{value:"obsidian",configurable:true,writable:true});}catch(e){}}if(p.release.name==="node"){try{Object.defineProperty(p,"release",{value:Object.assign({},p.release,{name:"obsidian"}),configurable:true,writable:true});}catch(e){}}globalThis.__reflow_spoofResult=p.release.name;}else{globalThis.__reflow_spoofResult=p&&p.release?p.release.name:"no-process";}}catch(e){globalThis.__reflow_spoofResult="err:"+(e&&e.message);}})();`;
 
 mkdirSync("dist", { recursive: true });
+mkdirSync("build", { recursive: true });
 
 const shared = {
   bundle: true,
@@ -96,38 +149,52 @@ const shared = {
   // with --node-integration-in-worker, so `process.release.name === "node"` is
   // true there too and transformers.js would pick its cpu-only node backend.
   banner: { js: forceWebBackend },
-  plugins: [inlinePatchedOrtGlue],
+  define: { __REFLOW_DEV__: String(dev) },
   sourcemap: watch ? "inline" : false,
   minify: !watch,
   logLevel: "info",
 };
 
-const contexts = await Promise.all([
-  esbuild.context({
-    ...shared,
-    entryPoints: ["main.ts"],
-    format: "cjs",
-    outfile: "dist/main.js",
-  }),
-  esbuild.context({
-    ...shared,
-    entryPoints: ["worker.ts"],
-    format: "iife",
-    outfile: "dist/worker.js",
-  }),
-]);
+// The worker bundle is built first and inlined into main.js as text, so it must
+// not import anything from main.ts — and it carries its own copy of pdf.js's
+// parsing worker, because it rasterizes pages on its own thread.
+const workerCtx = await esbuild.context({
+  ...shared,
+  entryPoints: ["worker.ts"],
+  format: "iife",
+  outfile: "build/worker.js",
+  plugins: [inlinePatchedOrtGlue, inlineTextFiles({ "pdf-worker": PDFJS_WORKER })],
+});
 
-function stageManifest() {
+const mainCtx = await esbuild.context({
+  ...shared,
+  entryPoints: ["main.ts"],
+  format: "cjs",
+  outfile: "dist/main.js",
+  plugins: [
+    inlinePatchedOrtGlue,
+    stubProbeInRelease,
+    inlineTextFiles({ "pdf-worker": PDFJS_WORKER, worker: "build/worker.js" }),
+  ],
+});
+
+function stageAssets() {
   copyFileSync("manifest.json", "dist/manifest.json");
+  copyFileSync("styles.css", "dist/styles.css");
 }
 
+// Strictly sequential: main.js inlines the worker bundle, so it has to exist.
+await workerCtx.rebuild();
+await mainCtx.rebuild();
+stageAssets();
+
 if (watch) {
-  await Promise.all(contexts.map((c) => c.watch()));
-  stageManifest();
+  await workerCtx.watch();
+  await mainCtx.watch();
   console.log("watching… (dist/)");
 } else {
-  await Promise.all(contexts.map((c) => c.rebuild()));
-  stageManifest();
-  await Promise.all(contexts.map((c) => c.dispose()));
-  console.log("built → dist/{main.js,worker.js,manifest.json}");
+  await Promise.all([workerCtx.dispose(), mainCtx.dispose()]);
+  console.log(
+    `built${dev ? " (dev: debug shim included)" : ""} → dist/{main.js,manifest.json,styles.css}`,
+  );
 }

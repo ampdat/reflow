@@ -66,7 +66,7 @@ export function frontmatter(input: FrontmatterInput): string {
   if (input.description) lines.push(`description: ${jsonStr(input.description)}`);
   lines.push(`pages: ${input.pages}`);
   if (input.conversionWarnings) lines.push(`conversion_warnings: ${input.conversionWarnings}`);
-  lines.push("tags:", "  - paper", "  - pdf-to-md", "---", "");
+  lines.push("tags:", "  - paper", "  - reflow", "---", "");
 
   return lines.join("\n");
 }

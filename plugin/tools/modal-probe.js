@@ -9,7 +9,7 @@
  *
  *   node tools/obsidian-drive.mjs run-file tools/modal-probe.js
  */
-const s = window.__pdf2md.settings();
+const s = window.__reflow.settings();
 s.outputFolder = "modal-test";
 s.maxPages = 2; // two pages of bert.pdf — long enough to watch, short enough to rerun
 
@@ -35,7 +35,7 @@ async function eventLoopLagMs(samples = 12) {
   return +lags[Math.floor(lags.length / 2)].toFixed(1);
 }
 
-const p = window.__pdf2md.convertPath("bert.pdf");
+const p = window.__reflow.convertPath("bert.pdf");
 let result = null;
 p.then((r) => (result = r)).catch((e) => (result = { threw: String(e?.message ?? e) }));
 

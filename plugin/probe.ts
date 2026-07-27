@@ -7,7 +7,7 @@
  * first is where every failure so far has been, and it needs no model download,
  * no PDF, and about a second to answer.
  *
- * Exposed as `window.__pdf2md` while the plugin is loaded.
+ * Exposed as `window.__reflow` while the plugin is loaded.
  */
 import * as ort from "onnxruntime-web";
 import { loadPdfBrowser, createBrowserVlm } from "../engine-js/src/browser/engine.js";
@@ -33,7 +33,7 @@ let sharedWasmPaths: unknown = null;
 export function setOrtWasmPaths(paths: unknown): void {
   sharedWasmPaths = paths;
   // Apply immediately, not just on the ortSmoke path: ad-hoc probes reach for
-  // `__pdf2md.ort` directly, and without this they hit "cannot determine the
+  // `__reflow.ort` directly, and without this they hit "cannot determine the
   // script source URL" before any execution provider gets a chance.
   try {
     if (paths) (ort as any).env.wasm.wasmPaths = paths;
@@ -244,7 +244,7 @@ export async function benchPages(
   // Phase logs, not just a final blob: a run that never returns has to be
   // diagnosable from the console alone (a stall in `from_pretrained` and a stall
   // in `generate` are the same silence otherwise).
-  const say = (m: string) => console.log(`[pdf2md bench] ${m}`);
+  const say = (m: string) => console.log(`[reflow bench] ${m}`);
 
   const t0 = performance.now();
   say(`start: ${pageList.length} pages, ${maxNewTokens} tok cap, device=${device}`);
@@ -298,7 +298,7 @@ export async function benchPages(
       // Streamed to the driver's console tail: a long run should be watchable,
       // not a single JSON blob at the end.
       console.log(
-        `[pdf2md bench] page ${page}: ${genTokens} tok in ${genSec.toFixed(1)}s = ` +
+        `[reflow bench] page ${page}: ${genTokens} tok in ${genSec.toFixed(1)}s = ` +
           `${(genTokens / genSec).toFixed(2)} tok/s (${truncated ?? "EOS"}) ` +
           `rss ${row.rssMb}MB heap ${row.heapMb}MB`,
       );
@@ -326,6 +326,6 @@ export function installProbe(extra: Record<string, unknown> = {}) {
   // way to check that costs nothing is to render the same pages both ways
   // (tools/raster-diff-probe.js) — which needs the adapter on this side.
   const api = { envReport, ortSmoke, ort, loadPdfBrowser, ...extra };
-  (window as any).__pdf2md = api;
+  (window as any).__reflow = api;
   return api;
 }

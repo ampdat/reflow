@@ -1,5 +1,5 @@
 /**
- * PDF → Markdown Obsidian plugin (desktop).
+ * Reflow — PDF → Markdown Obsidian plugin (desktop).
  *
  * Right-click a PDF in the vault (or run the command) → the engine-js core runs
  * granite-docling on WebGPU in the renderer → a Markdown package
@@ -20,6 +20,7 @@ import {
   Menu,
   Modal,
   Notice,
+  Platform,
   Plugin,
   PluginSettingTab,
   Setting,
@@ -32,7 +33,17 @@ import * as pdfjs from "pdfjs-dist";
 
 import type { AssembledDocument } from "../engine-js/src/core/types.js";
 import { convertPdfBrowser } from "../engine-js/src/browser/engine.js";
-import { configureOrt } from "./ort-env.js";
+import {
+  deviceCandidates,
+  isSlowDevice,
+  probeDevices,
+  slowDeviceReason,
+  type DeviceNavigator,
+  type DevicePreference,
+  type DeviceProbe,
+} from "../engine-js/src/browser/device.js";
+import { pdfWorkerUrl } from "./assets.js";
+import { configureOrt, tuneOrtThreads } from "./ort-env.js";
 import { benchPage, benchPages, installProbe, setOrtWasmPaths } from "./probe.js";
 import { convertPdfInWorker, workerBlobUrl, type WorkerConvertOptions } from "./worker-host.js";
 
@@ -40,23 +51,24 @@ import { convertPdfInWorker, workerBlobUrl, type WorkerConvertOptions } from "./
 // above) would select its onnxruntime-web + WebGPU backend instead of the
 // cpu-only node backend in Obsidian's Node-integrated renderer. IS_NODE_ENV is
 // captured once at that point, so restore the real value now for everything else.
+// (`window`, not `globalThis`: same object in the renderer, and the linter's
+// popout-window rule reads any `globalThis` as a document access.)
 try {
-  const g = globalThis as any;
-  if (g.__pdf2md_origRelease && (process as any).release) {
+  const w = window as unknown as { __reflow_origRelease?: string };
+  if (w.__reflow_origRelease && (process as any).release) {
     try {
-      (process as any).release.name = g.__pdf2md_origRelease;
+      (process as any).release.name = w.__reflow_origRelease;
     } catch {
       /* release.name may be locked; harmless — IS_NODE_ENV is already captured */
     }
-    delete g.__pdf2md_origRelease;
+    delete w.__reflow_origRelease;
   }
 } catch {
   /* ignore */
 }
 
-// pdf.js needs a worker; use the CDN module worker (first run only, then cached).
-pdfjs.GlobalWorkerOptions.workerSrc =
-  "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.worker.min.mjs";
+// pdf.js needs a worker; it is bundled and served from a blob (see assets.ts).
+pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl();
 // Fetch model weights from the HF hub (cached in the renderer after first run).
 (transformers as any).env.allowLocalModels = false;
 // Configure onnxruntime-web for Obsidian's renderer. On onnxruntime-web ≥ ~1.24
@@ -84,6 +96,12 @@ interface Settings {
    * a measurement of the same build without it.
    */
   useWorker: boolean;
+  /**
+   * Which compute backend to prefer. `auto` probes the machine and takes the
+   * best available; the others force a choice, and still fall back rather than
+   * fail outright. WebNN is opt-in only — see `deviceCandidates()`.
+   */
+  device: DevicePreference;
 }
 
 const DEFAULT_SETTINGS: Settings = {
@@ -91,6 +109,7 @@ const DEFAULT_SETTINGS: Settings = {
   maxPages: 0,
   perPageTimeoutSec: 300,
   useWorker: true,
+  device: "auto",
 };
 
 /**
@@ -111,6 +130,17 @@ class ConversionState {
   /** Tokens emitted for the page in flight — the only true liveness signal. */
   tokens = 0;
   done = false;
+  /**
+   * Set once the model has loaded, if it landed somewhere slow.
+   *
+   * This is the difference between a conversion that looks broken and one that
+   * is merely honest: on the CPU fallback a page takes minutes rather than
+   * seconds, and someone watching a bar that has not moved in four minutes has
+   * no way to tell those apart. Null on a normal GPU run — no warning, no noise.
+   */
+  slowNotice: string | null = null;
+  /** Backend the model loaded on, once known — used to explain a failure. */
+  device: string | null = null;
   private modelFraction = 0;
   /** Wall-clock start of the page in flight; null between pages. */
   private pageStartedAt: number | null = null;
@@ -193,7 +223,7 @@ class ConversionState {
   /** Compact line for the status bar shown while the dialog is closed. */
   statusBar(): string {
     const where = this.pageCount ? `page ${this.page}/${this.pageCount}` : "loading model";
-    return `⏳ ${this.fileName} — ${where}`;
+    return `${this.slowNotice ? "⚠" : "⏳"} ${this.fileName} — ${where}`;
   }
 
   detail(): string {
@@ -225,6 +255,7 @@ class ConversionState {
 class ConversionModal extends Modal {
   private statusEl!: HTMLElement;
   private detailEl!: HTMLElement;
+  private warningEl!: HTMLElement;
   private barEl!: HTMLProgressElement;
   private timer: number | null = null;
   private detaches = true;
@@ -236,24 +267,24 @@ class ConversionModal extends Modal {
   onOpen(): void {
     const { contentEl, titleEl } = this;
     titleEl.setText(`Converting ${this.state.fileName}`);
+    // Created up front and hidden, not created on demand: the notice arrives
+    // mid-render from a worker message, and inserting a node then would push the
+    // bar down under the user's cursor.
+    this.warningEl = contentEl.createEl("p", { cls: "reflow-progress-warning" });
+    this.warningEl.hide();
+
     this.statusEl = contentEl.createEl("p", { text: this.state.text });
-    this.barEl = contentEl.createEl("progress");
-    this.barEl.style.width = "100%";
+    this.barEl = contentEl.createEl("progress", { cls: "reflow-progress-bar" });
     this.barEl.max = 1;
     this.barEl.value = this.state.fraction();
-    this.detailEl = contentEl.createEl("p", { text: "" });
-    this.detailEl.style.opacity = "0.7";
-    this.detailEl.style.fontSize = "0.85em";
+    this.detailEl = contentEl.createEl("p", { text: "", cls: "reflow-progress-detail" });
 
-    const hint = contentEl.createEl("p", {
+    contentEl.createEl("p", {
       text: "Close this dialog to keep reading while the conversion continues.",
+      cls: "reflow-progress-hint",
     });
-    hint.style.opacity = "0.55";
-    hint.style.fontSize = "0.8em";
 
-    const row = contentEl.createDiv();
-    row.style.display = "flex";
-    row.style.justifyContent = "flex-end";
+    const row = contentEl.createDiv({ cls: "reflow-progress-buttons" });
     row.createEl("button", { text: "Cancel", cls: "mod-warning" }).addEventListener("click", () => {
       this.detaches = false; // an explicit cancel, not a detach
       this.state.cancel();
@@ -278,6 +309,12 @@ class ConversionModal extends Modal {
     this.statusEl.setText(this.state.text);
     this.barEl.value = this.state.fraction();
     this.detailEl.setText(this.state.detail());
+    if (this.state.slowNotice) {
+      this.warningEl.setText(this.state.slowNotice);
+      this.warningEl.show();
+    } else {
+      this.warningEl.hide();
+    }
   }
 
   onClose(): void {
@@ -293,7 +330,7 @@ function fmtDuration(sec: number): string {
   return `${Math.floor(sec / 60)}m ${String(sec % 60).padStart(2, "0")}s`;
 }
 
-export default class PdfToMdPlugin extends Plugin {
+export default class ReflowPlugin extends Plugin {
   settings: Settings = DEFAULT_SETTINGS;
   /**
    * Reopens the progress dialog of the conversion in flight, if any. Set while a
@@ -301,21 +338,38 @@ export default class PdfToMdPlugin extends Plugin {
    * even when the status bar is hidden.
    */
   showProgress: (() => void) | null = null;
-  /** Blob URL for dist/worker.js — resolved once, reused by every conversion. */
-  private workerUrl: Promise<string> | null = null;
+  /** Blob URL for the bundled worker — created once, reused by every conversion. */
+  private workerUrl: string | null = null;
   /** How the last conversion actually ran, for the probe and the log. */
   lastRunMode: "worker" | "renderer" | null = null;
+  /** Compute-backend probe, run once per session (see `probeOnce`). */
+  private deviceProbe: Promise<DeviceProbe> | null = null;
+  /** Its resolved value, for the synchronous message path. */
+  private lastProbe: DeviceProbe | null = null;
 
   async onload(): Promise<void> {
-    const g = globalThis as any;
+    await this.loadSettings();
+    this.registerCommands();
+    if (__REFLOW_DEV__) this.installDevProbe();
+  }
+
+  /**
+   * Debug shim (see plugin/probe.ts) — `window.__reflow` in the console, or
+   * driven headlessly by tools/obsidian-drive.mjs.
+   *
+   * Development builds only. It is a global, it exposes the raw engine, and it
+   * pulls in a second standalone onnxruntime-web for the ORT smoke test; a
+   * release build resolves the whole module to a stub (see esbuild.config.mjs).
+   */
+  private installDevProbe(): void {
+    const w = window as unknown as { __reflow_spoofResult?: string };
+    // eslint-disable-next-line obsidianmd/rule-custom-message -- dev build only
     console.log(
-      `[pdf-to-md] backend spoof: ${g.__pdf2md_spoofResult} | ` +
+      `[reflow] backend spoof: ${w.__reflow_spoofResult} | ` +
         `navigator.gpu: ${typeof navigator !== "undefined" && "gpu" in navigator} | ` +
         `ort glue: ${ortConfig.strategy} (${ortConfig.glueBytes} B)`,
     );
 
-    // Debug shim (see plugin/probe.ts) — `window.__pdf2md` in the console, or
-    // driven headlessly by tools/obsidian-drive.mjs.
     installProbe({
       // The injected platform libs, so an ad-hoc probe can exercise pdf.js or
       // transformers.js directly (bisecting a stall to one of them) without a
@@ -354,9 +408,9 @@ export default class PdfToMdPlugin extends Plugin {
         return benchPages({ transformers, pdfjs, data }, opts as any);
       },
     });
+  }
 
-    await this.loadSettings();
-
+  private registerCommands(): void {
     this.registerEvent(
       this.app.workspace.on("file-menu", (menu: Menu, file: TAbstractFile) => {
         if (file instanceof TFile && file.extension === "pdf") {
@@ -375,9 +429,9 @@ export default class PdfToMdPlugin extends Plugin {
       name: "Convert active PDF to Markdown",
       checkCallback: (checking: boolean) => {
         const f = this.app.workspace.getActiveFile();
-        const ok = !!f && f.extension === "pdf";
-        if (ok && !checking) this.convert(f as TFile);
-        return ok;
+        if (!(f instanceof TFile) || f.extension !== "pdf") return false;
+        if (!checking) void this.convert(f);
+        return true;
       },
     });
 
@@ -391,7 +445,7 @@ export default class PdfToMdPlugin extends Plugin {
       },
     });
 
-    this.addSettingTab(new PdfToMdSettingTab(this));
+    this.addSettingTab(new ReflowSettingTab(this));
   }
 
   /**
@@ -450,6 +504,13 @@ export default class PdfToMdPlugin extends Plugin {
         // sitting on one line for the ~30-60 s a page takes.
         onStep: (tokens) => {
           state.tokens = tokens;
+        },
+        onDevice: (info) => {
+          state.device = info.device;
+          if (!isSlowDevice(info.device)) return;
+          state.slowNotice = this.slowDeviceMessage(info.fellBack);
+          status?.setText(state.statusBar());
+          new Notice(state.slowNotice, 10000);
         },
         onModelProgress: (p) => {
           if (p?.status === "progress" && p.file?.includes("decoder")) {
@@ -517,7 +578,7 @@ export default class PdfToMdPlugin extends Plugin {
       const warn = doc.warnings.length
         ? ` — ${doc.warnings.length} warning(s), listed at the top of the note`
         : "";
-      if (doc.warnings.length) console.warn("[pdf-to-md]", doc.warnings);
+      if (doc.warnings.length) console.warn("[reflow]", doc.warnings);
       new Notice(`Converted → ${mdPath}${warn}`, 6000);
 
       const md = this.app.vault.getAbstractFileByPath(mdPath);
@@ -541,8 +602,8 @@ export default class PdfToMdPlugin extends Plugin {
       if (cancelled) {
         new Notice(`Conversion of ${file.name} cancelled`, 4000);
       } else {
-        console.error("[pdf-to-md]", e);
-        new Notice(`Conversion failed: ${e?.message ?? e}`, 8000);
+        console.error("[reflow]", e);
+        new Notice(this.explainFailure(e, state.device), 12000);
       }
       return {
         ok: false,
@@ -569,24 +630,32 @@ export default class PdfToMdPlugin extends Plugin {
     data: Uint8Array,
     file: TFile,
     signal: AbortSignal,
-    hooks: Pick<WorkerConvertOptions, "onProgress" | "onStep" | "onModelProgress">,
+    hooks: Pick<WorkerConvertOptions, "onProgress" | "onStep" | "onModelProgress" | "onDevice">,
   ): Promise<AssembledDocument> {
+    // Probe before anything expensive happens. An adapter request costs
+    // milliseconds and no download, and knowing the answer here is what lets a
+    // machine without a GPU be told so — instead of meeting a raw "Unsupported
+    // device: webgpu" from inside transformers.js part-way into a conversion.
+    const probe = await this.probeOnce();
+    const devices = deviceCandidates(this.settings.device, probe);
     const shared = {
       maxPages: this.settings.maxPages || undefined,
       sourceLabel: file.path,
       titleFallback: file.basename,
       perPageTimeoutMs: Math.max(1, this.settings.perPageTimeoutSec) * 1000,
+      devices,
+      shaderF16: probe.shaderF16,
     };
 
     if (this.settings.useWorker) {
       let url: string | null = null;
       try {
-        url = await this.resolveWorkerUrl();
+        url = this.resolveWorkerUrl();
       } catch (e: any) {
         // Only worker *setup* falls back. Once conversion has started, a failure
         // is a real failure and must surface as one.
         console.warn(
-          `[pdf-to-md] no conversion worker (${e?.message ?? e}) — ` +
+          `[reflow] no conversion worker (${e?.message ?? e}) — ` +
             `converting on the main thread; Obsidian may feel sluggish.`,
         );
         new Notice("Converting on the main thread — worker unavailable, see console.", 6000);
@@ -597,12 +666,16 @@ export default class PdfToMdPlugin extends Plugin {
           ...shared,
           signal,
           ...hooks,
-          onReady: (env) => console.log("[pdf-to-md] worker ready:", env),
+          onReady: (env) => {
+            // eslint-disable-next-line obsidianmd/rule-custom-message -- dev build only
+            if (__REFLOW_DEV__) console.log("[reflow] worker ready:", env);
+          },
         });
       }
     }
 
     this.lastRunMode = "renderer";
+    tuneOrtThreads((transformers as any).env.backends.onnx, devices[0]);
     return convertPdfBrowser(
       { transformers, pdfjs, data },
       {
@@ -612,6 +685,9 @@ export default class PdfToMdPlugin extends Plugin {
         signal,
         onProgress: hooks.onProgress,
         vlm: {
+          device: devices,
+          shaderF16: probe.shaderF16,
+          onDevice: (info) => hooks.onDevice?.(info),
           perPageTimeoutMs: shared.perPageTimeoutMs,
           onStep: (tokens) => hooks.onStep?.(tokens),
           progressCallback: (p: any) => hooks.onModelProgress?.(p),
@@ -621,27 +697,109 @@ export default class PdfToMdPlugin extends Plugin {
   }
 
   /**
-   * Blob URL for the worker bundle, built once per session.
+   * Probe the machine's compute backends once per session.
    *
-   * `manifest.dir` is the installed plugin folder relative to the vault root; a
-   * failed read is cached as a failure only for this call, so reinstalling the
-   * plugin and retrying works without a reload.
+   * The answer cannot change while Obsidian is running — a GPU is not hot-
+   * plugged into an Electron renderer — and a failed probe is cached as a
+   * probe-said-no rather than retried, so a conversion never waits on it twice.
    */
-  private resolveWorkerUrl(): Promise<string> {
-    if (!this.workerUrl) {
-      const dir = this.manifest.dir ?? `${this.app.vault.configDir}/plugins/${this.manifest.id}`;
-      this.workerUrl = workerBlobUrl((name) =>
-        this.app.vault.adapter.read(normalizePath(`${dir}/${name}`)),
+  private probeOnce(): Promise<DeviceProbe> {
+    // The cast is the price of not depending on @webgpu/types: this tsconfig's
+    // DOM lib predates both `navigator.gpu` and `navigator.ml`, and `device.ts`
+    // declares exactly the slice it reads.
+    const nav =
+      typeof navigator !== "undefined" ? (navigator as unknown as DeviceNavigator) : undefined;
+    this.deviceProbe ??= probeDevices(nav).then(
+      (p) => {
+        this.lastProbe = p;
+        return p;
+      },
+    );
+    return this.deviceProbe;
+  }
+
+  /**
+   * What to tell someone whose conversion just landed on the CPU.
+   *
+   * The cost estimate is deliberately a range rather than "very slow". Measured
+   * on the machine this was built on, a dense two-column page took 59 s on the
+   * CPU against 34 s on WebGPU — 1.7×, not the order of magnitude the fallback
+   * sounds like, because WebGPU and CPU are already close here (perf doc §4b).
+   * A cheaper laptop CPU will be far worse, so the wording has to cover both
+   * without inventing a number for hardware nobody has measured.
+   */
+  private slowDeviceMessage(fellBack: boolean): string {
+    const platform = Platform.isWin ? "win" : Platform.isLinux ? "linux" : "mac";
+    const why = this.settings.device === "wasm"
+      ? "CPU is selected in settings."
+      : fellBack
+        ? `The GPU backend failed to start. ${slowDeviceReason(this.deviceProbeSync(), platform)}`
+        : slowDeviceReason(this.deviceProbeSync(), platform);
+    return (
+      `Running on CPU — ${why} Expect around a minute per page on a fast machine ` +
+      `and several on an older one, and note that dense pages can exhaust the CPU ` +
+      `backend's memory and fail.`
+    );
+  }
+
+  /**
+   * Turn a runtime failure into something the user can act on.
+   *
+   * The one that needs it is the CPU backend's `std::bad_alloc`, which is a hard
+   * ceiling rather than a bug and hits *some documents and not others*. Measured
+   * here, both in the worker and in the renderer, on fresh windows: `bert.pdf`
+   * page 1 converts on the CPU in 60 s, `attention.pdf` page 1 dies in 5 s — and
+   * the page rasters are the same size (1191×1684 vs 1224×1584). The difference
+   * is upstream of the model: the Idefics3 processor splits a page into 512-px
+   * tiles by aspect ratio, giving bert 13 tiles / 878 prompt tokens and
+   * attention 17 / 1142. Seventeen tiles of fp32 vision activations plus ~1 GB
+   * of fp32 weights do not fit in WebAssembly's 4 GB address space; thirteen do.
+   *
+   * So the message says what the limit is and does not offer a fix that does not
+   * exist — the honest options are a GPU or (not yet built) a lower render scale
+   * on the CPU path, which would cut tiles at some cost in fidelity.
+   */
+  private explainFailure(e: any, device: string | null): string {
+    const message = String(e?.message ?? e);
+    const outOfMemory = /bad_alloc|out of memory|ERROR_CODE: 6\b/i.test(message);
+    if (outOfMemory && device && isSlowDevice(device)) {
+      return (
+        "The CPU backend ran out of memory on this page. WebAssembly is capped at " +
+        "4 GB, and pages that split into many tiles exceed it — this document needs " +
+        "a GPU. Other documents may still convert on the CPU."
       );
-      this.workerUrl.catch(() => {
-        this.workerUrl = null;
-      });
     }
+    if (outOfMemory) {
+      return `Conversion ran out of memory (${message}). Try a shorter document, or restart Obsidian to free memory.`;
+    }
+    return `Conversion failed: ${message}`;
+  }
+
+  /**
+   * The probe result, for message-building only.
+   *
+   * By the time a device message arrives the probe has long since resolved, but
+   * the call site is synchronous; this keeps the awkwardness in one place rather
+   * than making the notice path async.
+   */
+  private deviceProbeSync(): DeviceProbe {
+    return (
+      this.lastProbe ?? {
+        webgpu: { available: false, reason: "No compatible GPU was found." },
+        webnn: { available: false },
+        shaderF16: false,
+      }
+    );
+  }
+
+  /** Blob URL for the bundled worker, created once per session. */
+  private resolveWorkerUrl(): string {
+    if (!this.workerUrl) this.workerUrl = workerBlobUrl();
     return this.workerUrl;
   }
 
   onunload(): void {
-    this.workerUrl?.then((url) => URL.revokeObjectURL(url)).catch(() => {});
+    if (this.workerUrl) URL.revokeObjectURL(this.workerUrl);
     this.workerUrl = null;
   }
 
@@ -655,9 +813,15 @@ export default class PdfToMdPlugin extends Plugin {
     }
   }
 
+  /**
+   * `Vault.process` rather than `Vault.modify`: converting is a background job,
+   * and the note it overwrites may be open in a pane. `process` reads and
+   * replaces atomically, which is what the guidelines ask for when the edit
+   * isn't coming from the editor.
+   */
   private async writeText(path: string, data: string): Promise<void> {
     const existing = this.app.vault.getAbstractFileByPath(path);
-    if (existing instanceof TFile) await this.app.vault.modify(existing, data);
+    if (existing instanceof TFile) await this.app.vault.process(existing, () => data);
     else await this.app.vault.create(path, data);
   }
 
@@ -676,8 +840,8 @@ export default class PdfToMdPlugin extends Plugin {
   }
 }
 
-class PdfToMdSettingTab extends PluginSettingTab {
-  constructor(private plugin: PdfToMdPlugin) {
+class ReflowSettingTab extends PluginSettingTab {
+  constructor(private plugin: ReflowPlugin) {
     super(plugin.app, plugin);
   }
 
@@ -690,7 +854,7 @@ class PdfToMdSettingTab extends PluginSettingTab {
       .setDesc("Vault folder for converted packages. Empty = alongside the PDF.")
       .addText((t) =>
         t
-          .setPlaceholder("e.g. Papers")
+          .setPlaceholder("Papers")
           .setValue(this.plugin.settings.outputFolder)
           .onChange(async (v) => {
             this.plugin.settings.outputFolder = v;
@@ -719,6 +883,29 @@ class PdfToMdSettingTab extends PluginSettingTab {
           this.plugin.settings.perPageTimeoutSec = parseInt(v, 10) || DEFAULT_SETTINGS.perPageTimeoutSec;
           await this.plugin.saveSettings();
         }),
+      );
+
+    new Setting(containerEl)
+      .setName("Compute backend")
+      .setDesc(
+        "Automatic picks the fastest available and falls back to the CPU if there is no " +
+          "usable GPU. The CPU backend is slower and cannot handle every page — dense " +
+          "pages can exhaust its memory. WebNN needs Obsidian launched with " +
+          "--enable-features=WebMachineLearningNeuralNetwork and is experimental.",
+      )
+      .addDropdown((d) =>
+        d
+          .addOptions({
+            auto: "Automatic (recommended)",
+            webgpu: "GPU (WebGPU)",
+            webnn: "Neural accelerator (WebNN, experimental)",
+            wasm: "CPU (very slow)",
+          })
+          .setValue(this.plugin.settings.device)
+          .onChange(async (v) => {
+            this.plugin.settings.device = v as DevicePreference;
+            await this.plugin.saveSettings();
+          }),
       );
 
     new Setting(containerEl)

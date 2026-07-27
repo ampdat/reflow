@@ -39,7 +39,7 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(HERE, "../..");
 
 const PORT = Number(process.env.OBSIDIAN_CDP_PORT || 9333);
-const ROOT = process.env.PDF2MD_TEST_ROOT || resolve(REPO, ".obsidian-test");
+const ROOT = process.env.REFLOW_TEST_ROOT || resolve(REPO, ".obsidian-test");
 const PROFILE = resolve(ROOT, "profile");
 const VAULT = resolve(ROOT, "vault");
 const APP = "/Applications/Obsidian.app/Contents/MacOS/Obsidian";
@@ -160,7 +160,7 @@ function seedProfile() {
   const appJson = resolve(VAULT, ".obsidian", "app.json");
   if (!existsSync(appJson)) writeFileSync(appJson, JSON.stringify({ trustedForPlugins: true }));
   const cp = resolve(VAULT, ".obsidian", "community-plugins.json");
-  if (!existsSync(cp)) writeFileSync(cp, JSON.stringify(["pdf-to-md"]));
+  if (!existsSync(cp)) writeFileSync(cp, JSON.stringify(["reflow"]));
 }
 
 function isUp() {
@@ -236,7 +236,7 @@ async function evaluate(expression, { timeoutMs = 900_000, quiet = false } = {})
  * so a dropped socket costs one interval instead of the whole run.
  */
 async function runJob(expression, { pollMs = 5000, timeoutMs = 3_600_000 } = {}) {
-  const JOB = "__pdf2mdJob";
+  const JOB = "__reflowJob";
   await evaluate(
     `globalThis.${JOB} = { done: false, result: null, error: null, started: Date.now() };
      (async () => { ${expression} })().then(
@@ -312,8 +312,8 @@ try {
             `const b = [...document.querySelectorAll("button")].find(b => /trust/i.test(b.textContent));
              if (b) b.click();
              await app.plugins.setEnable(true);
-             if (!app.plugins.plugins["pdf-to-md"]) await app.plugins.enablePlugin("pdf-to-md");
-             return !!app.plugins.plugins["pdf-to-md"];`,
+             if (!app.plugins.plugins["reflow"]) await app.plugins.enablePlugin("reflow");
+             return !!app.plugins.plugins["reflow"];`,
             { timeoutMs: 20_000, quiet: true },
           );
           if (ready) break;

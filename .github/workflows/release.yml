@@ -1,0 +1,57 @@
+# Cut an Obsidian plugin release.
+#
+#   git tag 0.1.0 && git push origin 0.1.0
+#
+# Obsidian's community installer downloads exactly three files from the release
+# assets — main.js, manifest.json, styles.css — and matches the release tag
+# against the version in manifest.json. No "v" prefix: `v0.1.0` will not be
+# found. That mistake is silent (the plugin just never updates), so the tag is
+# checked against the manifest here rather than after someone reports it.
+name: Release
+
+on:
+  push:
+    tags:
+      - "*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        # The plugin is a subdirectory for now; this collapses when it moves to
+        # a repo of its own (manifest.json must sit at the repo root for the
+        # community directory to read it).
+        working-directory: plugin
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Check the tag matches manifest.json
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          MANIFEST=$(node -p "require('./manifest.json').version")
+          if [ "$TAG" != "$MANIFEST" ]; then
+            echo "tag $TAG != manifest version $MANIFEST" >&2
+            exit 1
+          fi
+
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm run build
+
+      - name: Publish release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${GITHUB_REF#refs/tags/}" \
+            --title "${GITHUB_REF#refs/tags/}" \
+            --draft \
+            dist/main.js dist/manifest.json dist/styles.css

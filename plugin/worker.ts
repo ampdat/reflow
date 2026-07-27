@@ -32,8 +32,8 @@ import {
   loadPdfBrowser,
   type LoadPdfBrowserOptions,
 } from "../engine-js/src/browser/engine.js";
-import { configureOrt } from "./ort-env.js";
-import { CMAP_URL, PDFJS_CDN, STANDARD_FONT_DATA_URL } from "./pdfjs-cdn.js";
+import { configureOrt, tuneOrtThreads } from "./ort-env.js";
+import { CMAP_URL, STANDARD_FONT_DATA_URL, pdfWorkerUrl } from "./assets.js";
 import type { WorkerMessage, WorkerRequest } from "./worker-protocol.js";
 
 /**
@@ -47,7 +47,17 @@ const PDF_OPTIONS: LoadPdfBrowserOptions = {
   cMapUrl: CMAP_URL,
 };
 
-declare const self: DedicatedWorkerGlobalScope;
+/**
+ * The worker global, spelled out rather than pulled in from TypeScript's
+ * `WebWorker` lib: this file shares a tsconfig with the renderer code, and
+ * loading both `DOM` and `WebWorker` collides on dozens of shared names.
+ */
+interface WorkerGlobal {
+  postMessage(message: unknown, transfer?: Transferable[]): void;
+  onmessage: ((ev: MessageEvent<WorkerRequest>) => void) | null;
+}
+
+declare const self: WorkerGlobal;
 
 function post(msg: WorkerMessage, transfer: Transferable[] = []): void {
   self.postMessage(msg, transfer);
@@ -92,7 +102,9 @@ function safeJson(v: unknown): string {
 // captured IS_NODE_ENV=false and offers onnxruntime-web + WebGPU: Obsidian
 // launches with --node-integration-in-worker, so `process` exists here too and
 // the check fires exactly as it does on the main thread.
-pdfjs.GlobalWorkerOptions.workerSrc = `${PDFJS_CDN}build/pdf.worker.min.mjs`;
+// pdf.js can't spawn a nested worker from here, so it `import()`s this URL as
+// its "fake worker" and parses on this thread — still off the main thread.
+pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl();
 (transformers as any).env.allowLocalModels = false;
 const ortConfig = configureOrt((transformers as any).env.backends.onnx);
 
@@ -132,6 +144,12 @@ self.onmessage = async (ev: MessageEvent<WorkerRequest>) => {
   if (msg.type !== "convert") return;
 
   signal = { aborted: false };
+  // Thread count has to be set before the first session is created, and the
+  // renderer already probed the machine, so the head of the candidate list is
+  // what this is sized for. A fallback further down the list runs
+  // single-threaded — slower still, but it is the last-resort path either way.
+  const devices = msg.opts.devices?.length ? msg.opts.devices : ["webgpu", "wasm"];
+  tuneOrtThreads((transformers as any).env.backends.onnx, devices[0]);
   try {
     const doc = await convertPdfBrowser(
       { transformers, pdfjs, data: new Uint8Array(msg.data) },
@@ -143,7 +161,9 @@ self.onmessage = async (ev: MessageEvent<WorkerRequest>) => {
         signal,
         onProgress: (p) => post({ type: "progress", p }),
         vlm: {
-          device: msg.opts.device,
+          device: devices,
+          shaderF16: msg.opts.shaderF16,
+          onDevice: (info) => post({ type: "device", ...info }),
           perPageTimeoutMs: msg.opts.perPageTimeoutMs,
           onStep: (tokens) => post({ type: "step", tokens }),
           progressCallback: (p: any) =>
@@ -181,7 +201,7 @@ post({
     hasDocument: typeof (globalThis as any).document !== "undefined",
     hasRaf: typeof (globalThis as any).requestAnimationFrame === "function",
     processReleaseName: (globalThis as any).process?.release?.name ?? null,
-    spoof: (globalThis as any).__pdf2md_spoofResult ?? null,
+    spoof: (globalThis as any).__reflow_spoofResult ?? null,
     ortStrategy: ortConfig.strategy,
   },
 });

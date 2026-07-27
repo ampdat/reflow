@@ -18,7 +18,7 @@ const FILE = "attention.pdf";
 const PAGES = 2;
 const RUNS = 3;
 
-const api = window.__pdf2md;
+const api = window.__reflow;
 if (!api) throw new Error("plugin not loaded");
 
 const mode = globalThis.PDF2MD_PROBE_MODE ?? "worker";
@@ -55,7 +55,7 @@ try {
       rssBeforeMb: before,
       rssAfterMb: rss(),
     });
-    console.log(`[pdf2md mem] run ${i}: ${before} → ${rss()} MB`);
+    console.log(`[reflow mem] run ${i}: ${before} → ${rss()} MB`);
   }
 } finally {
   settings.maxPages = restore;

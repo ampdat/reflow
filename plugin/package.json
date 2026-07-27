@@ -1,14 +1,17 @@
 {
-  "name": "pdf-to-md-obsidian",
+  "name": "reflow-obsidian",
   "version": "0.1.0",
   "private": true,
   "description": "Obsidian plugin: local PDF → Markdown with granite-docling on WebGPU.",
+  "license": "MIT",
   "type": "module",
   "scripts": {
     "build": "node esbuild.config.mjs",
+    "build:dev": "node esbuild.config.mjs --dev",
     "dev": "node esbuild.config.mjs --watch",
     "install:vault": "node install.mjs",
-    "deploy": "node esbuild.config.mjs && node install.mjs",
+    "deploy": "node esbuild.config.mjs --dev && node install.mjs",
+    "lint": "eslint .",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
@@ -19,7 +22,10 @@
   "devDependencies": {
     "@types/node": "^22.0.0",
     "esbuild": "^0.28.0",
+    "eslint": "^9.0.0",
+    "eslint-plugin-obsidianmd": "^0.2.0",
     "obsidian": "^1.5.0",
-    "typescript": "^5.6.0"
+    "typescript": "^5.6.0",
+    "typescript-eslint": "^8.0.0"
   }
 }

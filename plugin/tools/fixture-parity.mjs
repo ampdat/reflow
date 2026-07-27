@@ -77,9 +77,9 @@ for (const id of ids) {
     summary = JSON.parse(
       drive(
         "run",
-        `const s = __pdf2md.settings();
+        `const s = __reflow.settings();
          s.maxPages = 0; s.perPageTimeoutSec = 600; s.outputFolder = "out-${id}";
-         const r = await __pdf2md.convertPath(${JSON.stringify(`${id}.pdf`)});
+         const r = await __reflow.convertPath(${JSON.stringify(`${id}.pdf`)});
          return { ...r, heapMb: performance.memory ? Math.round(performance.memory.usedJSHeapSize/1048576) : null };`,
       ),
     );

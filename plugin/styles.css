@@ -1,0 +1,36 @@
+/* Reflow — progress dialog.
+ *
+ * These lived as inline element styles until submission: Obsidian's plugin
+ * guidelines ask for classes so a theme can restyle them, and the automated
+ * review flags hardcoded styles. Sizes are relative and colours come from
+ * Obsidian's CSS variables, so the dialog follows the active theme. */
+
+.reflow-progress-bar {
+  width: 100%;
+}
+
+.reflow-progress-detail {
+  color: var(--text-muted);
+  font-size: var(--font-smaller);
+}
+
+.reflow-progress-hint {
+  color: var(--text-faint);
+  font-size: var(--font-smallest);
+}
+
+.reflow-progress-buttons {
+  display: flex;
+  justify-content: flex-end;
+}
+
+/* Shown only when the conversion fell back to the CPU, where a page takes
+ * minutes instead of seconds. It sits above the bar deliberately: a stalled-
+ * looking progress bar is exactly what it exists to explain. */
+.reflow-progress-warning {
+  color: var(--text-error);
+  border-left: 3px solid var(--text-error);
+  padding-left: var(--size-4-2);
+  margin-bottom: var(--size-4-2);
+  font-size: var(--font-smaller);
+}
