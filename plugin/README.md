@@ -11,7 +11,9 @@ Right-click any note → **Export to EPUB** (or the *Export active note to EPUB*
 command) to get an `.epub` beside it for a Kindle or other e-reader. Optionally
 every conversion can write one automatically — see [Settings](#settings). The
 exporter adds no dependencies: it builds the ZIP with `CompressionStream` and
-needs no maths renderer, for the reason in [Formulas](#formulas).
+needs no maths renderer, for the reason in [Formulas](#formulas). On macOS,
+**Send to Kindle** in the same menu carries it the rest of the way — see
+[Getting it onto a Kindle](#getting-it-onto-a-kindle).
 
 This is the M4 shell over the fixture-validated engine (see [../PLAN.md](../PLAN.md)).
 `main.ts` is only Obsidian wiring; the whole conversion pipeline is `engine-js`.
@@ -341,6 +343,37 @@ a `Uint8Array` fed to two consumers arrives detached and empty at the second —
 and pdf.js answers that by hanging, not throwing. Pass a fresh `.slice()` each time.
 
 A full loop is `npm run deploy && node tools/obsidian-drive.mjs reload`, then an `eval`.
+
+## Getting it onto a Kindle
+
+**Send to Kindle** (macOS, in a note's right-click menu and as a command) exports
+the EPUB if there is no current one and hands it to Amazon's app. If the note has
+changed since the last export it re-exports first — sending a stale book is a
+silent wrong-content bug, and 40 ms is cheaper than reading the wrong thing.
+
+It stops at Amazon's confirmation window, deliberately. This is the only thing
+the plugin does that sends the reader's document off the machine, and the whole
+pitch is that nothing does; their click is the consent, and it belongs in
+Amazon's own UI where the destination account is visible. (There is also no way
+to go further: the app ships no CLI and no scripting dictionary.)
+
+Three implementation details that cost time to find:
+
+- **The app is resolved by bundle id** (`com.amazon.SendToKindle`), never by
+  path. Amazon installs it *inside* a folder called `Send to Kindle`, and a
+  Safari web app of the same name — a saved bookmark, bundle id
+  `com.apple.Safari.WebApp.*` — can sit right beside it in `/Applications`.
+  `open -b` lets Launch Services sort that out.
+- **`window.require`, not `await import()`.** A dynamic import of a `node:`
+  specifier goes to Chromium's module loader, which tries to *fetch* it:
+  `Failed to fetch dynamically imported module: node:child_process`. Electron's
+  renderer `require` is the only route that works. A static top-level import
+  works too but the community-directory review rejects it (`no-nodejs-modules`),
+  and rightly — it would break a mobile build outright.
+- **The Kindle *reading* app cannot open an EPUB.** Its `Info.plist` declares
+  only `com.amazon.kindle-document` (`azw`, `mobi`, `prc`, …) and PDF, so there
+  is no sideload path into it. Send to Kindle works because Amazon converts
+  server-side and the result syncs down into your library.
 
 ## Formulas
 

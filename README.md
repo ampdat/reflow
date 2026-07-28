@@ -29,6 +29,11 @@ your own typography — which is the point of the name.
 - **Export to EPUB** in any note's right-click menu, or the *Export active note
   to EPUB* command. Takes well under a second — it reads the package, not the
   PDF, so it works on notes converted long ago.
+- **Send to Kindle** (macOS) in the same menu: exports the EPUB if there isn't a
+  current one, then hands it to Amazon's Send to Kindle app. It stops at
+  Amazon's confirmation window — **that click is the only thing in this plugin
+  that sends your document off the machine**, and it belongs in Amazon's own UI
+  where the destination account is visible.
 - A progress dialog shows the page, live token count, elapsed time and estimate.
   Close it to keep reading — conversion carries on and moves to the status bar.
 - Multiple conversions can run at the same time with separate progress in the

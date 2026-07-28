@@ -17,6 +17,7 @@
 
 import {
   App,
+  FileSystemAdapter,
   Menu,
   Modal,
   Notice,
@@ -113,6 +114,13 @@ interface Settings {
    */
   exportEpub: boolean;
 }
+
+/**
+ * Amazon's Send to Kindle app. Resolved by bundle id, never by path: the app
+ * lives inside a *folder* named "Send to Kindle", and a Safari web app of the
+ * same name can sit beside it in /Applications.
+ */
+const SEND_TO_KINDLE_BUNDLE_ID = "com.amazon.SendToKindle";
 
 const DEFAULT_SETTINGS: Settings = {
   outputFolder: "",
@@ -454,6 +462,18 @@ export default class ReflowPlugin extends Plugin {
                 void this.exportEpubSafely(file);
               }),
           );
+          // `open -b` is macOS-only, and so is the app. Hiding the item beats
+          // offering one that cannot work.
+          if (Platform.isMacOS) {
+            menu.addItem((item) =>
+              item
+                .setTitle("Send to Kindle")
+                .setIcon("send")
+                .onClick(() => {
+                  void this.sendToKindleSafely(file);
+                }),
+            );
+          }
         }
       }),
     );
@@ -476,6 +496,18 @@ export default class ReflowPlugin extends Plugin {
         const f = this.app.workspace.getActiveFile();
         if (!(f instanceof TFile) || f.extension !== "md") return false;
         if (!checking) void this.exportEpubSafely(f);
+        return true;
+      },
+    });
+
+    this.addCommand({
+      id: "send-active-note-to-kindle",
+      name: "Send active note to Kindle",
+      checkCallback: (checking: boolean) => {
+        if (!Platform.isMacOS) return false;
+        const f = this.app.workspace.getActiveFile();
+        if (!(f instanceof TFile) || f.extension !== "md") return false;
+        if (!checking) void this.sendToKindleSafely(f);
         return true;
       },
     });
@@ -867,6 +899,79 @@ export default class ReflowPlugin extends Plugin {
   }
 
   /**
+   * Hand a note's EPUB to Amazon's Send to Kindle app, exporting it first if
+   * there isn't a current one.
+   *
+   * Deliberately stops at Amazon's confirmation window. There is no CLI and no
+   * scripting dictionary to drive it further, but that is not why: this is the
+   * only thing the plugin does that sends the reader's document off the machine,
+   * and the whole pitch is that nothing does. Their click is the consent, and it
+   * belongs in Amazon's own UI where the target account is visible.
+   */
+  async sendToKindle(file: TFile): Promise<Record<string, unknown>> {
+    const adapter = this.app.vault.adapter;
+    if (!(adapter instanceof FileSystemAdapter)) {
+      throw new Error("Send to Kindle needs a local vault folder.");
+    }
+
+    const epubPath = `${file.parent?.path ?? ""}/${file.basename}.epub`;
+    const existing = this.app.vault.getAbstractFileByPath(epubPath);
+    // Re-export when there is nothing there, and when the note has moved on
+    // since the last one: silently sending a stale book is a worse failure than
+    // spending the ~40 ms, and it is invisible until someone reads it.
+    const stale = existing instanceof TFile && existing.stat.mtime < file.stat.mtime;
+    const exported = !(existing instanceof TFile) || stale;
+    if (exported) await this.exportEpub(file);
+
+    if (!(await adapter.exists(epubPath))) {
+      throw new Error(`no EPUB was produced at ${epubPath}`);
+    }
+    await this.openInSendToKindle(adapter.getFullPath(epubPath));
+
+    new Notice(
+      `${exported ? "Exported and opened" : "Opened"} in Send to Kindle — ` +
+        "it uploads to Amazon when you confirm there.",
+      8000,
+    );
+    return { ok: true, epubPath, exported, stale };
+  }
+
+  /**
+   * `open -b <bundle id>` rather than a hard-coded path: the app installs into a
+   * *folder* called "Send to Kindle", and there is a same-named Safari web app
+   * one level up that is only a bookmark. Launch Services knows which is which.
+   */
+  private async openInSendToKindle(absolutePath: string): Promise<void> {
+    // Loaded here rather than at the top of the file, and behind the desktop
+    // guard, because a static `node:` import is not loadable on mobile and the
+    // community-directory review rejects one.
+    //
+    // `window.require` specifically, *not* `await import()`: a dynamic import of
+    // a `node:` specifier is handled by Chromium's module loader, which tries to
+    // fetch it as a URL and fails with "Failed to fetch dynamically imported
+    // module: node:child_process". Verified in Obsidian's renderer; Electron's
+    // require is the only route that works.
+    if (!Platform.isDesktop) throw new Error("Send to Kindle is desktop-only.");
+    const { execFile } = (
+      window as unknown as { require: (id: string) => typeof import("node:child_process") }
+    ).require("node:child_process");
+
+    return new Promise((resolve, reject) => {
+      execFile("open", ["-b", SEND_TO_KINDLE_BUNDLE_ID, absolutePath], (err) => {
+        if (!err) return resolve();
+        // `open` fails this way when Launch Services has no such bundle id,
+        // which is the "not installed" case and the only one worth explaining.
+        reject(
+          new Error(
+            "Amazon's Send to Kindle app was not found. Install it from " +
+              "amazon.com/sendtokindle and try again.",
+          ),
+        );
+      });
+    });
+  }
+
+  /**
    * `exportEpub` with the failure reported to the reader rather than the console.
    * Menu items and commands are fire-and-forget, so an unhandled rejection here
    * would be silent — the one failure mode a user cannot diagnose.
@@ -878,6 +983,17 @@ export default class ReflowPlugin extends Plugin {
       const message = err instanceof Error ? err.message : String(err);
       console.error("[reflow] EPUB export failed", err);
       new Notice(`EPUB export failed: ${message}`, 8000);
+    }
+  }
+
+  /** As above, for the Kindle hand-off. */
+  private async sendToKindleSafely(file: TFile): Promise<void> {
+    try {
+      await this.sendToKindle(file);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error("[reflow] Send to Kindle failed", err);
+      new Notice(`Send to Kindle failed: ${message}`, 10000);
     }
   }
 

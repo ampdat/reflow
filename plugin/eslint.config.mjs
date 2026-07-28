@@ -35,15 +35,16 @@ export default tseslint.config(
       },
     },
     rules: {
-      // "EPUB" is an acronym (Electronic PUBlication) and is capitalised
-      // everywhere it appears, Obsidian's own UI included; without this the
-      // sentence-case rule insists on "Export to epub".
+      // "EPUB" is an acronym (Electronic PUBlication) and "Kindle" is a product
+      // name; both are capitalised everywhere they appear, Amazon's own UI
+      // included. Without this the rule insists on "Export to epub" and
+      // "Send to kindle".
       //
       // `ignoreWords` and not `acronyms`: the rule reads its options as
       // `options.acronyms ?? DEFAULT_ACRONYMS`, so supplying that key *replaces*
       // the built-in list and silently breaks "PDF" everywhere else. Only
       // `ignoreWords` is additive.
-      "obsidianmd/ui/sentence-case": ["error", { ignoreWords: ["EPUB"] }],
+      "obsidianmd/ui/sentence-case": ["error", { ignoreWords: ["EPUB", "Kindle"] }],
       // Warnings, not errors: every one of these lands on a *third-party*
       // surface with no usable types — transformers.js's `env` bag, ORT's
       // wasmPaths, pdf.js internals, and `catch (e: any)`. Typing them properly
