@@ -570,6 +570,18 @@ without the per-platform binaries. Keep it in the back pocket if a machine ever 
       string* and, since ORT fixed the guard upstream ~1.24, never used at all. Now decided at build
       time and inlined only when a patch is genuinely needed. Also `isEvalSupported: false` for
       pdf.js, so a document's Type-4 shading functions are interpreted rather than compiled.
+- [x] **0.1.1 review: Completed.** Zero Errors. Both attestations verified (`main.js`, `styles.css`),
+      "Direct Filesystem Access" gone from Behavior, dependencies clean, health scored *Excellent*.
+      What remains is all Warning/Recommendation and mostly known: the `any`/unsafe family across the
+      untyped third-party surfaces; `globalThis` and `window.setTimeout` on worker code where `window`
+      does not exist; the console bridge we kept on purpose; and **Dynamic Code Execution, which did
+      not clear** — exactly as predicted, since pdf.js's own `new Function("")` capability probe stays
+      in the bundle even though `isEvalSupported: false` means we never compile anything from a
+      document. Removing it would mean patching upstream pdf.js; not worth it.
+- [ ] **`getSettingDefinitions()` for 0.2.0.** Settings do not appear in Obsidian's settings search on
+      1.13+. Backward compatible (older versions ignore the method), but it is a rewrite of the
+      settings tab. Trivial companions to fold in: two unused locals (`mathjax.ts:19`,
+      `probe.ts:256`) and an unnecessary regex escape (`doctags.ts:321`).
 - [ ] **Windows and Linux remain untested.** The code no longer assumes WebGPU (probe → candidates →
       CPU fallback, all unit-tested against fake navigators), but nothing has run on either OS.
 
