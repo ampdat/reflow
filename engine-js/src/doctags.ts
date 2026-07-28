@@ -32,12 +32,31 @@ export interface FigureRef {
   caption: string | null;
 }
 
+/**
+ * One display formula, with the bbox it occupied on the page.
+ *
+ * The Markdown carries the model's LaTeX and that is what Obsidian renders. The
+ * bbox is kept for a second, independent representation: cropped out of the page
+ * raster, an equation is the author's own typesetting rather than a transcription
+ * of it, which matters because the VLM demonstrably truncates formulas. Export
+ * targets that cannot render LaTeX (EPUB for e-readers) use the crop; nothing in
+ * the Markdown contract changes.
+ */
+export interface FormulaRef {
+  id: string;
+  index: number;
+  bbox: BBox | null;
+  /** The LaTeX as emitted into the Markdown, so a consumer can match the two up. */
+  tex: string;
+}
+
 export interface ParseResult {
   /** Body Markdown (no frontmatter). */
   markdown: string;
   /** First title, else first section header — for the vault folder name + frontmatter. */
   title: string | null;
   figures: FigureRef[];
+  formulas: FormulaRef[];
   /** Per-table grid of cell strings; feeds the numeric-fidelity cross-check (M3). */
   tables: string[][][];
   /** True if any OTSL merge cell was dropped (caller should warn). */
@@ -209,17 +228,20 @@ function renderTable(inner: Tok[]): { md: string; grid: string[][]; droppedSpans
 
 /**
  * Parse one page (or a concatenation) of DocTags into Markdown + structure.
- * `figureStart` lets the orchestrator keep figure numbering monotonic across pages.
+ * `figureStart`/`formulaStart` let the orchestrator keep numbering monotonic
+ * across pages.
  */
-export function parseDocTags(src: string, figureStart = 0): ParseResult {
+export function parseDocTags(src: string, figureStart = 0, formulaStart = 0): ParseResult {
   const toks = tokenize(src);
   const c: Cursor = { toks, i: 0 };
 
   const blocks: string[] = [];
   const figures: FigureRef[] = [];
+  const formulas: FormulaRef[] = [];
   const tables: string[][][] = [];
   let title: string | null = null;
   let figN = figureStart;
+  let formulaN = formulaStart;
   let droppedSpans = false;
 
   while (c.i < c.toks.length) {
@@ -264,7 +286,11 @@ export function parseDocTags(src: string, figureStart = 0): ParseResult {
       }
       case "formula": {
         const tex = innerText(inner);
-        if (tex) blocks.push(`$$${tex}$$`);
+        if (tex) {
+          formulaN += 1;
+          formulas.push({ id: `formula-${formulaN}`, index: formulaN, bbox, tex });
+          blocks.push(`$$${tex}$$`);
+        }
         break;
       }
       case "code": {
@@ -316,6 +342,7 @@ export function parseDocTags(src: string, figureStart = 0): ParseResult {
     markdown: blocks.join("\n\n") + (blocks.length ? "\n" : ""),
     title,
     figures,
+    formulas,
     tables,
     droppedSpans,
   };

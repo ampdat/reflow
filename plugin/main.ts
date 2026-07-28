@@ -541,6 +541,17 @@ export default class ReflowPlugin extends Plugin {
         await this.writeBinary(`${folder}/images/${fig.id}.png`, ab as ArrayBuffer);
         images++;
       }
+
+      // Formula crops: a sidecar for exports that cannot render LaTeX. The note
+      // itself is untouched and still carries `$$...$$`, which is what Obsidian
+      // renders — nothing here changes how the vault reads.
+      const formulas: Array<{ id: string; tex: string; page: number }> = [];
+      for (const f of doc.formulas) {
+        if (!f.png) continue;
+        const ab = f.png.buffer.slice(f.png.byteOffset, f.png.byteOffset + f.png.byteLength);
+        await this.writeBinary(`${folder}/images/${f.id}.png`, ab as ArrayBuffer);
+        formulas.push({ id: f.id, tex: f.tex, page: f.page });
+      }
       await this.writeText(mdPath, doc.markdown);
 
       // The plugin used to write only the markdown and the figures, which left
@@ -559,6 +570,7 @@ export default class ReflowPlugin extends Plugin {
         options: { formulas: true, ocr: false },
         pages: doc.pageCount,
         images,
+        ...(formulas.length ? { formulas } : {}),
         markdown_chars: doc.markdown.length,
         timings_ms: { load: 0, inference: doc.timings.inference, assemble: doc.timings.assemble },
         wall_ms: Math.round(performance.now() - started),

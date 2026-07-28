@@ -46,6 +46,15 @@ describe("parseDocTags", () => {
     expect(r.markdown).toContain("$$e = mc^2$$");
   });
 
+  it("records the formula's bbox and LaTeX without changing the Markdown", () => {
+    expect(r.formulas).toHaveLength(1);
+    expect(r.formulas[0]!.id).toBe("formula-1");
+    expect(r.formulas[0]!.tex).toBe("e = mc^2");
+    // The bbox is what lets an export target crop the equation out of the page
+    // raster instead of re-rendering the model's transcription of it.
+    expect(r.formulas[0]!.bbox).not.toBeNull();
+  });
+
   it("renders the OTSL table as a Markdown table with faithful numbers", () => {
     expect(r.markdown).toContain("| Model | BLEU |");
     expect(r.markdown).toContain("| Transformer | 28.4 |");
@@ -68,6 +77,11 @@ describe("parseDocTags", () => {
   it("continues figure numbering from figureStart", () => {
     const r2 = parseDocTags("<picture><loc_0><loc_0><loc_10><loc_10></picture>", 4);
     expect(r2.figures[0]!.id).toBe("figure-5");
+  });
+
+  it("continues formula numbering from formulaStart", () => {
+    const r2 = parseDocTags("<formula><loc_0><loc_0><loc_10><loc_10>x = 1</formula>", 0, 7);
+    expect(r2.formulas[0]!.id).toBe("formula-8");
   });
 
   it("flags dropped merged cells rather than emitting silently-wrong tables", () => {

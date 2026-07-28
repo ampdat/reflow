@@ -73,6 +73,15 @@ export async function convertPdf(
     imageCount++;
   }
 
+  // Formula crops sit alongside the figures but are counted separately: `images`
+  // has always meant "figures extracted", and something may already depend on it.
+  const formulaMeta: Array<{ id: string; tex: string; page: number }> = [];
+  for (const f of doc.formulas) {
+    if (!f.png) continue;
+    await writeFile(join(imagesDir, `${f.id}.png`), f.png);
+    formulaMeta.push({ id: f.id, tex: f.tex, page: f.page });
+  }
+
   const mdPath = join(outDir, `${stem}.md`);
   await writeFile(mdPath, doc.markdown, "utf-8");
 
@@ -87,6 +96,7 @@ export async function convertPdf(
     options: { formulas, ocr },
     pages: doc.pageCount,
     images: imageCount,
+    ...(formulaMeta.length ? { formulas: formulaMeta } : {}),
     markdown_chars: doc.markdown.length,
     timings_ms: { load: loadMs, inference: doc.timings.inference, assemble: doc.timings.assemble },
     wall_ms: Date.now() - t0,

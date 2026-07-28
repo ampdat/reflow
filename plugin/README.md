@@ -148,6 +148,17 @@ checks the manifest and that the tag equals its version (no `v` prefix — a
 mismatch fails silently in the directory), lints, typechecks, builds, and
 attaches the three files as a draft release.
 
+Two ways to have a perfectly good release that Obsidian cannot see, both of
+which report the same *"No release matches your manifest version"*:
+
+- **A `v` prefix on the tag.** The workflow's manifest check catches this.
+- **The "Set as a pre-release" box, ticked when publishing the draft.** GitHub
+  excludes pre-releases from `/releases/latest`, which then answers 404 — the
+  release exists and is reachable by tag, it just isn't *the latest*. `gh release
+  edit <version> --prerelease=false --latest` undoes it; `curl -s
+  https://api.github.com/repos/<owner>/<repo>/releases/latest` confirms it, and
+  is the quickest way to see the repository the way the directory does.
+
 **Still to do before submitting:** make the repository public, cut the first
 release, and submit at [community.obsidian.md](https://community.obsidian.md)
 (since May 2026; the old `obsidian-releases` pull request is gone).

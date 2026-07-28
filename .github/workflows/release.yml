@@ -41,11 +41,17 @@ jobs:
       - run: npm run typecheck
       - run: npm run build
 
+      # Left as a draft on purpose, so the assets can be checked before anyone
+      # can install them. When you publish it, leave "Set as a pre-release"
+      # UNTICKED: GitHub excludes pre-releases from /releases/latest, and
+      # Obsidian reports that as "No release matches your manifest version" —
+      # the release is there, it just isn't the latest one. `--latest` asks for
+      # that flag up front so publishing the draft keeps it.
       - name: Publish release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh release create "${GITHUB_REF#refs/tags/}" \
             --title "${GITHUB_REF#refs/tags/}" \
-            --draft \
+            --draft --latest \
             dist/main.js dist/manifest.json dist/styles.css

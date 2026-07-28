@@ -9,9 +9,15 @@
 
 import { parseDocTags } from "../doctags.js";
 import { frontmatter } from "../frontmatter.js";
-import { cleanMath } from "../mathjax.js";
+import { cleanMath, fixFormula } from "../mathjax.js";
 import { warnImageOnly } from "../meta.js";
-import type { AssembledDocument, AssembledFigure, PageSource, Vlm } from "./types.js";
+import type {
+  AssembledDocument,
+  AssembledFigure,
+  AssembledFormula,
+  PageSource,
+  Vlm,
+} from "./types.js";
 
 /**
  * A tick a host UI can render. Conversion is minutes long and page-granular, so
@@ -98,9 +104,11 @@ export async function assembleDocument(
 
   const bodyParts: string[] = [];
   const figures: AssembledFigure[] = [];
+  const formulas: AssembledFormula[] = [];
   const pageWarnings: string[] = [];
   let title: string | null = null;
   let figCount = 0;
+  let formulaCount = 0;
   /** Pages whose tables lost merged cells — named, so the warning is locatable. */
   const spanPages: number[] = [];
   let inference = 0;
@@ -136,13 +144,28 @@ export async function assembleDocument(
       pageWarnings.push(`page ${p}: generation stopped early (${truncated}) — output may be incomplete`);
     }
 
-    const parsed = parseDocTags(docTags, figCount);
+    const parsed = parseDocTags(docTags, figCount, formulaCount);
     if (title === null) title = parsed.title;
     if (parsed.droppedSpans) spanPages.push(p);
 
     for (const fig of parsed.figures) {
       figures.push({ id: fig.id, page: p, png: fig.bbox ? await page.crop(fig.bbox) : null });
       figCount++;
+    }
+
+    // Same crop, one block later, for the same reason: this is the only point in
+    // the pipeline where the page raster still exists. `fixFormula` is applied
+    // here rather than left to `cleanMath` below, so the recorded LaTeX is
+    // character-identical to what ends up in the Markdown — a consumer pairing
+    // crops with `$$...$$` blocks has something exact to match on.
+    for (const f of parsed.formulas) {
+      formulas.push({
+        id: f.id,
+        page: p,
+        tex: fixFormula(f.tex),
+        png: f.bbox ? await page.crop(f.bbox) : null,
+      });
+      formulaCount++;
     }
     bodyParts.push(parsed.markdown);
 
@@ -190,6 +213,7 @@ export async function assembleDocument(
     title: finalTitle,
     markdown,
     figures,
+    formulas,
     pageCount: pages.pageCount,
     pagesProcessed: lastPage,
     warnings,

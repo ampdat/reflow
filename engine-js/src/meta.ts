@@ -26,6 +26,16 @@ export interface Meta {
   options: { formulas: boolean; ocr: boolean };
   pages: number;
   images: number;
+  /**
+   * Display formulas cropped out of the page raster, in document order.
+   *
+   * A sidecar for export targets that cannot render LaTeX: the `.md` is
+   * unchanged and still carries `$$...$$`. `tex` is recorded so a consumer can
+   * pair a crop with the right `$$` block *and verify the pairing* rather than
+   * trusting ordinal position in a note the reader may since have edited.
+   * Omitted when the document has none, so clean notes gain no field.
+   */
+  formulas?: Array<{ id: string; tex: string; page: number }>;
   markdown_chars: number;
   /** Per-stage wall times (ms): pdf load/raster, VLM inference, assembly. */
   timings_ms: { load: number; inference: number; assemble: number };

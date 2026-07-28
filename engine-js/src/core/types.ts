@@ -73,12 +73,29 @@ export interface AssembledFigure {
   png: Uint8Array | null;
 }
 
+/**
+ * One display formula, cropped out of the page raster.
+ *
+ * A sidecar to the Markdown, not a replacement for it: the note keeps its
+ * `$$...$$` and Obsidian renders that. The crop exists for export targets that
+ * cannot render LaTeX — and, unlike the transcription, it cannot be wrong about
+ * the maths, because it *is* the page.
+ */
+export interface AssembledFormula {
+  id: string;
+  page: number;
+  /** LaTeX exactly as it appears in the Markdown, i.e. post-`fixFormula`. */
+  tex: string;
+  png: Uint8Array | null;
+}
+
 /** Everything the orchestrator produces, before any file/vault I/O. */
 export interface AssembledDocument {
   title: string;
   /** Full markdown text including YAML frontmatter. */
   markdown: string;
   figures: AssembledFigure[];
+  formulas: AssembledFormula[];
   pageCount: number;
   pagesProcessed: number;
   warnings: string[];
