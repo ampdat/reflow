@@ -271,6 +271,49 @@ class ConversionState {
  * its window. An Obsidian modal also blocks the workspace, so closing it is the
  * only way to read your notes while a conversion runs — that has to be free.
  */
+/** Where Amazon distributes the app. */
+const SEND_TO_KINDLE_URL = "https://www.amazon.com/sendtokindle";
+
+/** Carries whether the failure was "app not installed", which has its own dialog. */
+class SendToKindleError extends Error {
+  constructor(message: string, readonly notInstalled: boolean) {
+    super(message);
+    this.name = "SendToKindleError";
+  }
+}
+
+/**
+ * Shown when the hand-off fails because Amazon's app is not installed.
+ *
+ * A Notice would be the obvious choice and is the wrong one: Obsidian's Notices
+ * dismiss themselves on click, so a link inside one is unclickable — the same
+ * trap the conversion progress UI hit. This needs a real dialog because the
+ * useful part *is* the link.
+ */
+class SendToKindleMissingModal extends Modal {
+  onOpen(): void {
+    const { contentEl } = this;
+    contentEl.createEl("h3", { text: "Send to Kindle is not installed" });
+    contentEl.createEl("p", {
+      text:
+        "Reflow exported the EPUB, but handing it to a Kindle needs Amazon's free " +
+        "Send to Kindle app for macOS. Install it, then try again — the EPUB is " +
+        "already sitting next to your note either way.",
+    });
+    const buttons = contentEl.createDiv({ cls: "modal-button-container" });
+    const get = buttons.createEl("button", { text: "Get Send to Kindle", cls: "mod-cta" });
+    get.addEventListener("click", () => {
+      window.open(SEND_TO_KINDLE_URL, "_blank");
+      this.close();
+    });
+    buttons.createEl("button", { text: "Close" }).addEventListener("click", () => this.close());
+  }
+
+  onClose(): void {
+    this.contentEl.empty();
+  }
+}
+
 class ConversionModal extends Modal {
   private statusEl!: HTMLElement;
   private detailEl!: HTMLElement;
@@ -957,16 +1000,17 @@ export default class ReflowPlugin extends Plugin {
     ).require("node:child_process");
 
     return new Promise((resolve, reject) => {
-      execFile("open", ["-b", SEND_TO_KINDLE_BUNDLE_ID, absolutePath], (err) => {
+      execFile("open", ["-b", SEND_TO_KINDLE_BUNDLE_ID, absolutePath], (err, _stdout, stderr) => {
         if (!err) return resolve();
-        // `open` fails this way when Launch Services has no such bundle id,
-        // which is the "not installed" case and the only one worth explaining.
-        reject(
-          new Error(
-            "Amazon's Send to Kindle app was not found. Install it from " +
-              "amazon.com/sendtokindle and try again.",
-          ),
+        // `open` exits 1 for every failure but says which in stderr, so the two
+        // cases have to be told apart by text. Reporting "install the app" for,
+        // say, an unreadable file would send someone off to fix the wrong thing.
+        //   missing app  → "LSCopyApplicationURLsForBundleIdentifier() failed …"
+        //   missing file → "The file /… does not exist."
+        const notInstalled = /LSCopyApplicationURLsForBundleIdentifier|bundle identifier/i.test(
+          String(stderr),
         );
+        reject(new SendToKindleError(String(stderr).trim() || err.message, notInstalled));
       });
     });
   }
@@ -986,13 +1030,21 @@ export default class ReflowPlugin extends Plugin {
     }
   }
 
-  /** As above, for the Kindle hand-off. */
+  /**
+   * As above, for the Kindle hand-off — except that "the app isn't installed" is
+   * not really an error, it is a missing prerequisite with an obvious next step,
+   * so it gets a dialog with the download link instead of a red Notice.
+   */
   private async sendToKindleSafely(file: TFile): Promise<void> {
     try {
       await this.sendToKindle(file);
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
       console.error("[reflow] Send to Kindle failed", err);
+      if (err instanceof SendToKindleError && err.notInstalled) {
+        new SendToKindleMissingModal(this.app).open();
+        return;
+      }
+      const message = err instanceof Error ? err.message : String(err);
       new Notice(`Send to Kindle failed: ${message}`, 10000);
     }
   }

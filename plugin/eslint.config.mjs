@@ -44,7 +44,17 @@ export default tseslint.config(
       // `options.acronyms ?? DEFAULT_ACRONYMS`, so supplying that key *replaces*
       // the built-in list and silently breaks "PDF" everywhere else. Only
       // `ignoreWords` is additive.
-      "obsidianmd/ui/sentence-case": ["error", { ignoreWords: ["EPUB", "Kindle"] }],
+      "obsidianmd/ui/sentence-case": [
+        "error",
+        {
+          ignoreWords: ["EPUB", "Kindle"],
+          // "Send to Kindle" is the app's actual name, so the phrase keeps its
+          // capitals wherever it appears. ignoreRegex is matched against the
+          // whole UI string and, like ignoreWords, defaults to empty — so it
+          // adds to the built-in lists rather than replacing them.
+          ignoreRegex: ["Send to Kindle"],
+        },
+      ],
       // Warnings, not errors: every one of these lands on a *third-party*
       // surface with no usable types — transformers.js's `env` bag, ORT's
       // wasmPaths, pdf.js internals, and `catch (e: any)`. Typing them properly
