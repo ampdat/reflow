@@ -379,13 +379,37 @@ This is cheaper *and* more faithful than re-rendering the LaTeX:
 - **It cannot be wrong about the maths.** The crop is the page. A renderer can
   only ever be as good as the model's transcription — and the transcription is
   sometimes truncated (below).
-- Inline maths needs no images: in this corpus it is entirely sub/superscripts,
-  which become `<sup>`/`<sub>` and stay searchable, selectable and legible in
-  night mode.
+- Inline maths needs no images: sub- and superscripts become `<sup>`/`<sub>` and
+  stay searchable, selectable and legible in night mode. Both shapes are handled,
+  which matters more than it sounds — the VLM writes the base *outside* the maths
+  (`h$_{t}$`, so the formula is a bare `_{t}`) while a person types it *inside*
+  (`$h_t$`). Handling only the first meant hand-written notes got no
+  sub/superscripts at all.
 
-Notes with no crops — hand-written, or converted before this existed — still
-export: their equations come out as LaTeX source, and the notice says how many
-and that re-converting the PDF will fix it.
+### Notes with no crops
+
+A hand-written note, or one converted before crops existed, still exports — but
+**its display equations do not render**. There is no crop to show and no maths
+renderer to fall back on, so the equation becomes its own LaTeX source, labelled:
+
+> *Formula could not be rendered*
+> `\text{Attention}(Q, K, V) = \text{softmax}\left(\frac{QK^T}{\sqrt{d_k}}\right)V`
+
+Labelling it is the point. A bare `<code>` span dropped into the flow of a page
+reads like a typesetting bug, and the reader cannot tell whether the export
+failed or the note was always that way. This says which, and keeps the source,
+which is the part they can still act on. The count also comes back as a notice
+after the export.
+
+Inline maths degrades better: anything that is a sub/superscript still renders
+properly, and only genuine inline maths (`$\alpha + \beta \leq 1$`) falls back to
+source — inline, with no label, because a callout mid-sentence would be worse
+than the problem.
+
+Rendering these properly is the one thing that would need MathJax
+(~662 KB gzipped, ~45% on the plugin). The spike argued against paying that, but
+it argued about *converted papers*, where crops always exist; if exporting
+arbitrary notes becomes a real use case, that trade is worth re-opening.
 
 ### Truncated formulas, and the click-to-reveal fallback
 

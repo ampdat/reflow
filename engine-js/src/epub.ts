@@ -229,14 +229,27 @@ export function splitFrontmatter(md: string): Frontmatter {
 /**
  * Inline maths that is not really maths.
  *
- * Measured across both `attention` runs, *every* inline formula is a bare
- * sub/superscript — `$^{*}$` on a footnote marker, `h$_{t}$` in running prose.
  * `<sup>`/`<sub>` are older than EPUB and work on every device ever shipped, and
- * unlike an image they stay searchable, selectable and legible in night mode.
- * Returns null when the formula is real maths and must be left alone.
+ * unlike an image they stay searchable, selectable and legible in night mode. So
+ * anything expressible that way is, and only real maths needs a renderer.
+ *
+ * Two shapes, because the two sources of our Markdown write maths differently
+ * and only handling one of them silently halves the coverage:
+ *
+ *   `h$_{t}$`   the VLM puts the base *outside* the maths, so the formula is a
+ *               bare script. This is all of the inline maths in both `attention`
+ *               runs.
+ *   `$h_{t}$`   a human puts the base *inside*. Missing this meant hand-written
+ *               notes got no sub/superscripts at all.
+ *
+ * Conservative by construction: no backslash (so no commands), no nested braces,
+ * short operands. Anything else returns null and is left to the caller.
  */
 const TRIVIAL_SCRIPT = /^\s*([_^])\{?([^{}$\\]{1,12})\}?\s*$/;
 const TRIVIAL_IDENT = /^\s*([A-Za-z][A-Za-z0-9]{0,3})\s*$/;
+/** A base identifier, then `_`/`^` and either `{…}` or one character. */
+const BASE_RE = /^([A-Za-z][A-Za-z0-9]{0,7})/;
+const SCRIPT_RE = /^([_^])(?:\{([^{}$\\]{1,16})\}|([A-Za-z0-9]))/;
 
 export function trivialMathToXhtml(tex: string): string | null {
   const script = TRIVIAL_SCRIPT.exec(tex);
@@ -246,7 +259,43 @@ export function trivialMathToXhtml(tex: string): string | null {
   }
   const ident = TRIVIAL_IDENT.exec(tex);
   if (ident) return `<em>${escapeXml(ident[1]!)}</em>`;
-  return null;
+
+  // base + up to two scripts: `h_t`, `d_{model}`, `x^2`, `x_i^2`.
+  let rest = tex.trim().replace(/\s+/g, "");
+  const base = BASE_RE.exec(rest);
+  if (!base) return null;
+  rest = rest.slice(base[0].length);
+  if (!rest) return null; // a bare identifier is TRIVIAL_IDENT's job
+
+  let html = `<em>${escapeXml(base[1]!)}</em>`;
+  const used = new Set<string>();
+  while (rest) {
+    const m = SCRIPT_RE.exec(rest);
+    if (!m) return null;
+    const kind = m[1]!;
+    // `x_i_j` is not something we can render honestly; hand it back.
+    if (used.has(kind)) return null;
+    used.add(kind);
+    html += `<${kind === "^" ? "sup" : "sub"}>${escapeXml(m[2] ?? m[3]!)}</${kind === "^" ? "sup" : "sub"}>`;
+    rest = rest.slice(m[0].length);
+  }
+  return html;
+}
+
+/**
+ * A display equation we cannot draw, presented as such.
+ *
+ * The alternative — dropping a bare `<code>` of LaTeX into the flow of the page
+ * — reads like a typesetting bug, and the reader has no way to tell whether the
+ * export failed or the note was always like that. Naming it costs one line and
+ * keeps the equation's source, which is the thing they can still act on.
+ */
+function unrenderedFormula(tex: string): string {
+  return (
+    '<aside class="callout callout-warning math-unrendered">' +
+    '<p class="callout-title">Formula could not be rendered</p>' +
+    `<p><code class="tex">${escapeXml(tex.trim())}</code></p></aside>`
+  );
 }
 
 interface RenderCtx {
@@ -461,6 +510,11 @@ th, td { border: 1px solid #999; padding: 0.25em 0.5em; text-align: left; }
 aside.callout { border-left: 4px solid #999; padding: 0.1em 1em; margin: 1em 0; }
 aside.callout-warning { border-left-color: #b8860b; }
 p.callout-title { font-weight: bold; }
+/* An equation we could not draw. Quieter than a real warning — it is a
+   limitation of the export, not a problem with the document. */
+aside.math-unrendered { font-size: 0.9em; }
+aside.math-unrendered p.callout-title { font-weight: normal; font-style: italic; }
+aside.math-unrendered code.tex { font-size: 1em; }
 `;
 
 interface Chapter {
@@ -591,18 +645,23 @@ export async function buildEpub(input: EpubInput): Promise<EpubResult> {
           `<div class="math-display">` +
           `<img src="${useAsset(cropPath, "math")}" alt="${escapeXml(entry.tex.trim())}"/></div>`;
       } else {
-        // No crop, or the note has been edited since it was made. Show the
-        // source rather than silently dropping the equation.
+        // No crop, or the note has been edited since the crop was made. Say so
+        // plainly and still show the source: a reader who meets bare LaTeX in
+        // the middle of a page should know it is a limitation of the export and
+        // not something wrong with the document.
         stats.formulasAsText++;
-        html = `<div class="math-display"><code class="tex">${escapeXml(entry.tex.trim())}</code></div>`;
+        html = unrenderedFormula(entry.tex);
       }
     }
     rendered.set(entry.index, html);
   }
   if (stats.formulasAsText) {
+    // No "re-convert the PDF" advice here: this fires just as often for a
+    // hand-written note, which never had a PDF to re-convert.
     warnings.push(
-      `${stats.formulasAsText} equation${stats.formulasAsText > 1 ? "s" : ""} exported as LaTeX ` +
-        `source — no formula image was available. Re-convert the PDF to get equation images.`,
+      `${stats.formulasAsText} equation${stats.formulasAsText > 1 ? "s" : ""} could not be ` +
+        `rendered and were exported as LaTeX source — no formula image was available. ` +
+        `Converted papers get one by re-converting the PDF.`,
     );
   }
 

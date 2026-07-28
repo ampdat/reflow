@@ -66,6 +66,12 @@ plugin, and the crops came out 4.5× smaller than rendered equation images.
 More faithful: **the crop is the page**, whereas a renderer can only be as good
 as the model's transcription — which is sometimes truncated.
 
+The cost of that choice lands on notes with **no** crops — hand-written ones, or
+packages converted before this existed. They still export, and sub/superscripts
+still render, but a display equation has nothing to draw: it becomes a labelled
+*"Formula could not be rendered"* block that keeps the LaTeX source, so the
+reader knows it is a limit of the export rather than a broken document.
+
 **Truncated formulas are detected and offered back to you.** The repair pass
 balances braces so MathJax renders *something*, which means a formula the model
 cut off short renders cleanly and looks correct — equation (1) of the Transformer
@@ -137,5 +143,5 @@ EPUB** works on any note in the vault, not just a converted one.
 
 - **Engine, target (primary):** a portable **TypeScript + ONNX** core in [`engine-js/`](./engine-js/) — a single compact VLM ([granite-docling-258M](https://huggingface.co/onnx-community/granite-docling-258M-ONNX), official ONNX export, Apache-2.0) running under [transformers.js](https://huggingface.co/blog/transformersjs-v4). Full page image → **DocTags** → Markdown, entirely in JS: no Python, no sidecar binary. The *same* core embeds in a Node CLI, an Obsidian desktop plugin, a browser extension, and eventually mobile — only `device`/`dtype` change. Rationale and route comparison: [docs/perf-and-portability.md](./docs/perf-and-portability.md).
 - **Engine, bootstrap (reference oracle):** Python Docling (MIT) — the fast path that answered *is the quality there?* and froze the artifact contract + fixture suite. Retained as the **modular fallback** and a **numeric cross-check** for the VLM (it copies table cells from the PDF text layer; the VLM can invent them). Not on the shipping path.
-- **Math policy:** LaTeX-first (`$...$`) in the Markdown — Obsidian renders it natively, so the plugin ships no maths renderer. The EPUB cannot rely on that (Kindle drops MathML and silently discards SVG), so display equations export as the crop taken from the page during conversion and inline maths becomes `<sup>`/`<sub>`. Notes with no crops still export, with their equations as LaTeX source. See [Formulas](#formulas).
+- **Math policy:** LaTeX-first (`$...$`) in the Markdown — Obsidian renders it natively, so the plugin ships no maths renderer. The EPUB cannot rely on that (Kindle drops MathML and silently discards SVG), so display equations export as the crop taken from the page during conversion and sub/superscripts become `<sup>`/`<sub>`. A note with no crops still exports, but its display equations do not render: each becomes a labelled *"Formula could not be rendered"* block keeping the LaTeX source. See [Formulas](#formulas).
 - **Never silently wrong (VLM hedge):** VLM-emitted numeric table cells are reconciled against the pdf.js text layer; the fixture numeric-fidelity checks are the arbiter before any quantized build becomes default.
