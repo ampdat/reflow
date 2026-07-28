@@ -16,6 +16,13 @@ on:
 
 permissions:
   contents: write
+  # Artifact attestations: `id-token` signs the provenance statement with the
+  # run's OIDC identity, `attestations` writes it to the repository's store.
+  # Without them a user has to take on faith that the main.js they downloaded
+  # was built from this source — which, for a plugin that reads their documents,
+  # is worth more than the two lines it costs.
+  id-token: write
+  attestations: write
 
 jobs:
   release:
@@ -40,6 +47,17 @@ jobs:
       - run: npm run lint
       - run: npm run typecheck
       - run: npm run build
+
+      # Must run in the job that produced the files, against the exact bytes
+      # that get attached below — an attestation over a rebuilt artifact proves
+      # nothing about the one users download.
+      - name: Attest the release assets
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: |
+            plugin/dist/main.js
+            plugin/dist/manifest.json
+            plugin/dist/styles.css
 
       # Left as a draft on purpose, so the assets can be checked before anyone
       # can install them. When you publish it, leave "Set as a pre-release"

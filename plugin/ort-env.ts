@@ -38,14 +38,18 @@
 import PATCHED_ORT_GLUE from "virtual:ort-glue";
 
 /**
- * Whether the bundled glue already carries the upstream fix (onnxruntime-web
+ * Whether the installed glue already carries the upstream fix (onnxruntime-web
  * ~1.24-1.26 added `process?.type != "renderer"` to the epilogue). When it does,
  * the whole override below is unnecessary and we leave transformers.js's own
  * `wasmPaths` alone — fewer moving parts, and its sidecar caching keeps working.
+ *
+ * Decided by the build (see `analyzeOrtGlue` in esbuild.config.mjs) rather than
+ * by inspecting the inlined text here, because in this case there *is* no
+ * inlined text: shipping 92 KB of unused emscripten glue put `require("fs")`
+ * into main.js and got the plugin flagged for filesystem access it never
+ * performs.
  */
-const GLUE_IS_FIXED_UPSTREAM = /process\??\.type\s*!=/.test(
-  (PATCHED_ORT_GLUE as string).slice((PATCHED_ORT_GLUE as string).lastIndexOf("export default")),
-);
+const GLUE_IS_FIXED_UPSTREAM = !__REFLOW_ORT_GLUE_PATCHED__;
 
 let glueUrl: string | null = null;
 

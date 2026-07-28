@@ -120,9 +120,43 @@ Obsidian's installer downloads **only** `main.js`, `manifest.json` and
    would quietly convert on the main thread forever. `worker.ts` is bundled to
    `build/worker.js` (scratch, gitignored) and inlined from there.
 2. **pdf.js's parsing worker is inlined too** ([`assets.ts`](assets.ts)), for the
-   remote-code reason above. `main.js` is ~4.7 MB as a result: the main bundle,
+   remote-code reason above. `main.js` is ~4.6 MB as a result: the main bundle,
    the worker bundle, and two copies of the pdf.js worker (the renderer path and
    the conversion worker each need one).
+
+### What the review reads is the bundle, not your intent
+
+Two findings in the 0.1.0 review came from bytes in `main.js` that the plugin
+never executes, and both are worth remembering because the instinct they invite
+is the wrong one.
+
+**"Direct Filesystem Access — can read and write any file on the system."**
+`main.js` contained `require("fs")`, `require("path")` and `require("os")`. All
+of them lived inside the onnxruntime emscripten glue, which was inlined *as a
+text string* and — on a current dependency tree — never used at all, because
+the guard it patches has been fixed upstream since ORT ~1.24. Ninety-two
+kilobytes of dead text was enough to have the plugin described to users as
+something that reads their filesystem. The fix is in
+[`esbuild.config.mjs`](esbuild.config.mjs): decide at build time whether a patch
+is needed and inline the glue only then. Encoding the string so a scanner
+wouldn't recognise it would have "worked" and is exactly what the developer
+policies prohibit — obfuscation is a policy violation, not a workaround.
+
+**Dynamic code execution.** pdf.js compiles Type 4 (PostScript calculator)
+shading functions with `new Function(src, …)`. `docParams()` in
+[`browser/pdf.ts`](../engine-js/src/browser/pdf.ts) now passes
+`isEvalSupported: false` on both the worker and renderer paths, so pdf.js uses
+its interpreter and never compiles code out of the document it was handed. Its
+own `new Function("")` capability probe still appears in the bundle, so a static
+scanner may still flag the pattern; the substance is that nothing in a converted
+PDF becomes executable code.
+
+**Inline `eslint-disable` comments for `obsidianmd/*` rules are rejected
+outright** — that, not the logging they suppressed, is what failed 0.1.0. The
+console calls themselves are only a warning. Where a rule genuinely has to be
+relaxed (the worker's warn/error bridge, which is a worker's only route to the
+console), it is relaxed in [`eslint.config.mjs`](eslint.config.mjs) where it is
+visible, never mid-file.
 
 ### The manifest lives at the repository root
 

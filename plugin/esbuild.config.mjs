@@ -34,9 +34,67 @@ const dev = watch || process.argv.includes("--dev");
 //
 // Instead, inline a *patched* copy as text under `virtual:ort-glue`; ort-env.ts
 // serves it from a blob URL via `wasmPaths.mjs`. See plugin/ort-env.ts.
+//
+// The decision is made **here, at build time**, and the text is inlined only if
+// a patch is actually needed. It used to be inlined unconditionally and the
+// same question asked again at runtime, which cost more than the 92 KB: the
+// glue's own Node branch (`var fs = require("fs")`, `require("path")`,
+// `require("os")`) sat in main.js as dead string data, and Obsidian's review
+// reads the bundle, not the guard around it. The plugin was reported as
+// "Direct Filesystem Access ... can read and write any file on the system" on
+// the strength of text it never executes. Encoding the string to hide it would
+// be obfuscation, which the developer policies forbid outright — and would be
+// the wrong instinct anyway. Not shipping it is the honest fix.
 const ORT_GLUE = "node_modules/@huggingface/transformers/dist/ort-wasm-simd-threaded.jsep.mjs";
 const GLUE_EPILOGUE =
   "if (isNode) isPthread = (await import('worker_threads')).workerData === 'em-pthread';";
+
+/**
+ * Does the installed glue still need our patch, and if so, what does the
+ * patched copy look like?
+ *
+ * Runs once per build rather than per bundle, so both the main and the worker
+ * context agree — and so the answer can be `define`d into both.
+ */
+function analyzeOrtGlue() {
+  const source = readFileSync(ORT_GLUE, "utf8");
+
+  // onnxruntime-web ~1.24-1.26 added the missing guard upstream, so on a
+  // current transformers there is nothing to patch. Detect that rather than
+  // assuming a version: `process?.type != "renderer"` in the epilogue.
+  if (/isPthread\s*=\s*\(await import\(["']worker_threads["']\)\)/.test(source)) {
+    const epilogue = source.slice(source.lastIndexOf("export default"));
+    if (/process\??\.type\s*!=/.test(epilogue)) {
+      console.log("  [ort-glue] upstream glue guards on process.type — nothing inlined");
+      return { patched: false, source: "" };
+    }
+  }
+
+  if (!source.includes(GLUE_EPILOGUE)) {
+    // Neither the known-broken epilogue nor the upstream fix: fail loudly
+    // rather than shipping a glue we only think we understand.
+    throw new Error(
+      `[ort-glue] unrecognized node-detection epilogue in ${ORT_GLUE}. ` +
+        `onnxruntime-web changed; re-check the patch in plugin/ort-env.ts.`,
+    );
+  }
+  const patched = source.replace(GLUE_EPILOGUE, "// [reflow] node pthread bootstrap removed");
+  // One `worker_threads` reference legitimately survives: the one inside the
+  // module body, which *is* guarded by `"renderer" != process.type` and so is
+  // unreachable here. Anything else means the patch missed something.
+  const remaining = patched.split("worker_threads").length - 1;
+  if (remaining !== 1 || !patched.includes('"renderer"!=process.type')) {
+    throw new Error(
+      `[ort-glue] expected exactly one renderer-guarded worker_threads reference ` +
+        `after patching, found ${remaining} (guard present: ` +
+        `${patched.includes('"renderer"!=process.type')})`,
+    );
+  }
+  console.log(`  [ort-glue] patched ${(patched.length / 1024).toFixed(1)} KB of emscripten glue`);
+  return { patched: true, source: patched };
+}
+
+const ortGlue = analyzeOrtGlue();
 
 const inlinePatchedOrtGlue = {
   name: "inline-patched-ort-glue",
@@ -45,43 +103,10 @@ const inlinePatchedOrtGlue = {
       path: "virtual:ort-glue",
       namespace: "ort-glue",
     }));
-    build.onLoad({ filter: /.*/, namespace: "ort-glue" }, () => {
-      const source = readFileSync(ORT_GLUE, "utf8");
-
-      // onnxruntime-web ~1.24-1.26 added the missing guard upstream, so on a
-      // current transformers there is nothing to patch. Detect that rather than
-      // assuming a version: `process?.type != "renderer"` in the epilogue.
-      if (/isPthread\s*=\s*\(await import\(["']worker_threads["']\)\)/.test(source)) {
-        const epilogue = source.slice(source.lastIndexOf("export default"));
-        if (/process\??\.type\s*!=/.test(epilogue)) {
-          console.log("  [ort-glue] upstream glue already guards on process.type — no patch needed");
-          return { contents: source, loader: "text" };
-        }
-      }
-
-      if (!source.includes(GLUE_EPILOGUE)) {
-        // Neither the known-broken epilogue nor the upstream fix: fail loudly
-        // rather than shipping a glue we only think we understand.
-        throw new Error(
-          `[ort-glue] unrecognized node-detection epilogue in ${ORT_GLUE}. ` +
-            `onnxruntime-web changed; re-check the patch in plugin/ort-env.ts.`,
-        );
-      }
-      const patched = source.replace(GLUE_EPILOGUE, "// [reflow] node pthread bootstrap removed");
-      // One `worker_threads` reference legitimately survives: the one inside the
-      // module body, which *is* guarded by `"renderer" != process.type` and so is
-      // unreachable here. Anything else means the patch missed something.
-      const remaining = patched.split("worker_threads").length - 1;
-      if (remaining !== 1 || !patched.includes('"renderer"!=process.type')) {
-        throw new Error(
-          `[ort-glue] expected exactly one renderer-guarded worker_threads reference ` +
-            `after patching, found ${remaining} (guard present: ` +
-            `${patched.includes('"renderer"!=process.type')})`,
-        );
-      }
-      console.log(`  [ort-glue] patched ${(patched.length / 1024).toFixed(1)} KB of emscripten glue`);
-      return { contents: patched, loader: "text" };
-    });
+    build.onLoad({ filter: /.*/, namespace: "ort-glue" }, () => ({
+      contents: ortGlue.source,
+      loader: "text",
+    }));
   },
 };
 
@@ -149,7 +174,13 @@ const shared = {
   // with --node-integration-in-worker, so `process.release.name === "node"` is
   // true there too and transformers.js would pick its cpu-only node backend.
   banner: { js: forceWebBackend },
-  define: { __REFLOW_DEV__: String(dev) },
+  define: {
+    __REFLOW_DEV__: String(dev),
+    // Whether `virtual:ort-glue` carries a patched copy at all. Asked at build
+    // time so ort-env.ts doesn't have to re-derive it by regexing text that,
+    // on a healthy dependency tree, isn't in the bundle.
+    __REFLOW_ORT_GLUE_PATCHED__: String(ortGlue.patched),
+  },
   sourcemap: watch ? "inline" : false,
   minify: !watch,
   logLevel: "info",
