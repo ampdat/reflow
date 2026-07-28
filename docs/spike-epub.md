@@ -17,11 +17,11 @@ before anyone builds it for real.
 | Question | Answer |
 |---|---|
 | Can we produce a valid EPUB from the Markdown package? | **Yes.** All three stages build. 25 XHTML files, 0 xmllint errors, and Amazon's own Kindle Previewer converts it with **0 errors, 0 quality issues, "Enhanced Typesetting: Supported"**. **[measured]** |
-| What does it cost in dependencies? | **In Node, nothing** — a hand-rolled ZIP writer over `node:zlib`, and `@napi-rs/canvas`, already a dependency. **In the plugin, 662 KB gzipped** if we bundle MathJax's SVG output. That is the whole cost, and §5 argues it may be avoidable entirely. **[measured]** |
+| What does it cost in dependencies? | **Nothing, on the recommended path** — a hand-rolled ZIP writer over `node:zlib`, plus formula crops the converter already has the page raster to make (§7). Bundling MathJax would cost **662 KB gzipped, ~+45% on the plugin**; §7 is the argument for not doing that. **[measured]** |
 | Do formulas have to be images? | **On Kindle, yes — and this is the finding.** SVG math passes Kindle Previewer with zero errors *and is silently dropped from the output book*. Raster math survives. A validator that says "0 errors" is not telling you your equations are there. **[measured]** |
 | Can Obsidian's own MathJax do the job? | **No.** Obsidian ships MathJax 3.2.2 with the **CHTML output jax only** — no `tex2svg`, and the SVG module is genuinely absent from its bundle, not merely unexposed. `tex2mml` does work. **[measured]** |
 | How much math actually needs rendering? | **Much less than you'd think.** In the `attention` package, **18 of 23 formulas are bare sub/superscripts** (`$^{*}$`, `h$_{t}$`) that belong in `<sup>`/`<sub>`, not in a PNG. Only 5 are real display equations. **[measured]** |
-| Is there a zero-dependency path to rendered math? | **Probably, and it is the most interesting idea here.** DocTags gives every `<formula>` a bbox, and `page.crop()` already exists — we could cut equations straight out of the page raster, as we already do for figures. 0 KB bundle, author's own typesetting. §5c. **[estimated]** |
+| Is there a zero-dependency path to rendered math? | **Yes — built and measured in §7.** DocTags gives every `<formula>` a bbox and `page.crop()` already exists, so equations are cut straight out of the page raster like figures. 4/4 coverage, 19.3 KB vs 88.3 KB, no dependency — and *more* correct than the LaTeX, which the model truncated on two of the four. **[measured]** |
 
 ---
 
@@ -29,8 +29,8 @@ before anyone builds it for real.
 
 ```bash
 cd engine-js
-npm i -D mathjax-full                     # only needed for --math svg|png|auto
-node tools/md2epub.mjs <package-dir> --stage 3
+node tools/md2epub.mjs <package-dir> --math crop   # no dependencies; see §7
+npm i -D mathjax-full                              # only for --math svg|png|auto
 ```
 
 Input is the frozen artifact contract (`<stem>/<stem>.md` + `images/`); output is one `.epub` beside
@@ -41,6 +41,7 @@ it. `--stage 1|2|3` are presets over two real knobs, `--math` and `--no-images`:
 | 1 | literal LaTeX in `<code>` | no | the container: ZIP layout, OPF, nav, XHTML well-formedness |
 | 2 | literal LaTeX | yes | manifest, media types, path plumbing |
 | 3 | `auto` — HTML where possible, PNG otherwise | yes | the Kindle-safe target |
+| — | `--math crop` | yes | **the recommendation.** Uses the converter's formula crops; no renderer at all (§7) |
 | — | `--math svg` | yes | the *better* answer on real EPUB 3 readers (see §4b) |
 
 The note is split into one XHTML document per top-level heading (24 for `attention`), because a
@@ -73,9 +74,11 @@ Validation:
 - **ZIP layout**: `mimetype` first and `Stored`, per spec.
 - **Kindle Previewer 3.106.0**: `Success`, `Error Count 0`, `Quality Issue Count 0`, Enhanced
   Typesetting `Supported`. The only notice is `W14016: Cover not specified`.
-- **epubcheck**: **not run** — it is not installed here and getting it means a download. Kindle
-  Previewer runs its own validation and passed, but epubcheck is the industry gate and remains the
-  one box unticked. **[unverified]**
+- **epubcheck v5.3.0** (EPUB 3.3 rules): stages 1, 2 and 3 all report **0 fatals / 0 errors /
+  0 warnings / 0 infos**. The `--math svg` variant initially failed with **15 × OPF-015** — the
+  prototype stamped `properties="svg"` on every chapter once any formula was SVG, and the property
+  is an error on documents that do not contain inline SVG. Fixed by deciding it per chapter after
+  rendering; all four modes are now clean.
 
 The rendered math is correct — MathJax's output for equation (1) reads exactly as it does in the
 paper, truncation included (the source Markdown carries a "generation stopped early" warning on that
@@ -117,6 +120,11 @@ discards the inline SVG and reports success. I did not open the book on a physic
 "silently dropped" is an inference from the container rather than a photograph **[unverified]** —
 but it is a strong one, and it means **`--math svg` must not be the Kindle path**, while remaining
 the right answer for Apple Books / Kobo / Thorium, where it is smaller, sharper, and re-styleable.
+
+The same build also carried 15 epubcheck errors while Kindle Previewer called it clean. **Neither
+tool alone is sufficient evidence**: epubcheck is the standards gate, Kindle Previewer is the vendor
+gate, and only counting resources inside the KPF tells you the content survived. All three are worth
+running, and §8 runs all three.
 
 Two smaller consequences of the same measurement:
 
@@ -176,7 +184,7 @@ bytes **[measured]**. So if we can produce an SVG, we can produce a PNG in-plugi
 `tex2mml` also works, so MathML-in-EPUB3 is available for 0 KB — good on Apple Books, useless on
 Kindle. Worth keeping in the back pocket, not worth building for.
 
-### 5c. The idea that might make 5b unnecessary **[estimated]**
+### 5c. The idea that makes 5b unnecessary **[estimated at the time; §8 has since measured it]**
 
 We already crop figures out of the rendered page raster: `convert.ts` calls `page.crop(fig.bbox)`.
 And in `doctags.ts`, the `formula` case has a bbox **in scope and discards it**:
@@ -200,9 +208,10 @@ So we could cut equations out of the page image the same way we cut figures. Tha
 
 Against it: crops inherit scan quality and page background, cannot be restyled or inverted, cannot
 scale beyond their raster, and are useless for a scanned or low-DPI source. And they only exist for
-formulas the model tagged with a bbox. This is a genuinely open trade, not a recommendation — but it
-is cheap to test (the bbox is already parsed and thrown away) and it would delete the single largest
-cost in §5b.
+formulas the model tagged with a bbox.
+
+*This section was written as an open trade. It has since been built and measured — see §8, which
+resolves it in favour of crops.*
 
 ---
 
@@ -239,16 +248,75 @@ scalar. Fixed, and a reminder that one document is not a test suite.
 
 ---
 
-## 7. If we build it
+## 7. Follow-up — formula crops, built and measured **[measured]**
+
+*2026-07-27, same day. §5c is no longer a hypothesis: the bboxes are retained, the crops are
+written, and the exporter uses them.*
+
+**What was built.** `<formula>` bboxes now survive `parseDocTags` (`FormulaRef`), get cropped in the
+same page loop that already crops figures, and are written as `images/formula-N.png` with a
+`formulas: [{id, tex, page}]` array in `meta.json`. **The `.md` is byte-for-byte unchanged** — it
+still carries `$$...$$`, so Obsidian rendering is untouched and the note is not made worse to serve
+an export. `md2epub.mjs --math crop` pairs `$$` blocks with the sidecar by document order and
+**verifies each pairing against the recorded LaTeX**, falling back per formula to rendering when the
+sidecar is absent, stale, or edited.
+
+One trap worth recording: `convert.ts` runs `cleanMath()` over the assembled body, so the LaTeX in
+the `.md` is *not* what the parser saw. The sidecar records `fixFormula(tex)` for exactly this
+reason — `formula-2` below is stored wrapped in `\begin{aligned}`, which is `fixFormula`'s doing, and
+without that the content check would never match.
+
+**Result on `attention` (6 pages, converted through the plugin on WebGPU):**
+
+| | crops | MathJax (`--stage 3`) |
+|---|---:|---:|
+| display formulas rendered | **4 of 4 (100%)** | 4 of 4 |
+| fallbacks needed | **0** | — |
+| math bytes | **19.3 KB** | 88.3 KB |
+| build time | **17 ms** | ~400 ms |
+| new dependencies | **none** | mathjax-full, 662 KB gzipped |
+
+Crops came out **4.5× smaller** than the MathJax PNGs, which is the opposite of what §5c guessed.
+
+**Legibility** is not a problem at the existing 2× render scale — all four are crisp, and no
+higher-scale re-render is needed.
+
+**The fidelity argument turned out to be the strongest one.** Two of the four equations are
+*truncated in the model's LaTeX* and complete in the crop:
+
+- `formula-1` transcribes as `... \text{softmax} ( \frac{QK^{T}}{\sqrt{d_{k}}}` — missing the closing
+  `)V` and the equation number. The crop is the whole of equation (1), tag included.
+- `formula-4` transcribes as `PE_{(pos,2i)} = \sin(pos/1000` — truncated mid-number, and only the
+  first of the two equations. The crop has both, with their `2i/d_model` exponents.
+
+So on this document the crop path is not merely cheaper than rendering the LaTeX — **it is more
+correct**, because it routes around the VLM transcription errors that the conversion warnings already
+flag. A renderer can only ever be as good as the transcription it is given.
+
+**All three gates pass** on the crop build:
+
+- epubcheck v5.3.0 — 0 fatals / 0 errors / 0 warnings / 0 infos
+- Kindle Previewer 3.106 — Success, 0 errors, 0 quality issues, Enhanced Typesetting Supported
+- KPF resources — **8 = 4 figures + 4 formulas**, i.e. unlike the SVG build, the equations actually
+  reach the device
+
+**Still open.** One paper, 6 pages, one layout. Coverage was 100% here, but a formula the model does
+not tag with a bbox still falls back, and two-column layouts and scanned sources are untested. Night
+mode remains a wart shared with any raster path. And nothing has yet been opened on a physical
+Kindle.
+
+## 8. If we build it
 
 1. **Stages 1 and 2 are basically done and cost nothing.** A "Export to EPUB" command producing a
    text-and-figures EPUB is a small, self-contained piece of work with no new dependencies.
 2. **Do the §4a tiering before any renderer.** It removes two-thirds of the formulas from the
    problem, and it is twenty lines.
-3. **Spike 5c next, before committing to 5b.** One conversion run with formula bboxes retained
-   answers whether we ever need to ship MathJax. It is the cheapest remaining question with the
-   largest consequence.
+3. ~~Spike 5c next, before committing to 5b.~~ **Done — see §7. Do not ship MathJax.** Crops cover
+   every display formula, cost 4.5× fewer bytes, need no dependency, and are *more* correct than
+   rendering the model's LaTeX. Keep a renderer only as a fallback question for notes with no
+   sidecar, and note that leaving those as LaTeX text is a legitimate answer.
 4. **Emit SVG for EPUB 3 readers and raster for Kindle** — the same book cannot serve both well, so
    this is either a setting or two export targets. §4b says the failure is silent, which argues for
    defaulting to raster.
-5. **Run epubcheck, and open one book on a real Kindle,** before any of this is called done.
+5. **Open one book on a real Kindle** before any of this is called done. epubcheck, Kindle Previewer
+   and the KPF resource count all pass (§7), but none of them is a screen.

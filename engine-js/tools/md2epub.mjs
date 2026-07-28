@@ -23,7 +23,14 @@
  *   --stage 3   + formulas rendered as raster images, sized in `em` so they
  *               track the reader's font size. This is the Kindle-safe target.
  *
- * A fourth mode, `--math svg`, is not a stage — it is the *better* answer on any
+ * `--math crop` is the interesting one: instead of re-rendering the model's
+ * LaTeX, it uses the equation images the converter cropped straight out of the
+ * page raster (`meta.json` -> `formulas[]`). That needs no math renderer at all,
+ * and the crop cannot be wrong about the maths the way a transcription can. It
+ * falls back to rendering, per formula, whenever the sidecar is absent or no
+ * longer matches the note.
+ *
+ * A further mode, `--math svg`, is not a stage — it is the *better* answer on any
  * EPUB 3 reader that can draw SVG (Apple Books, Kobo, Thorium) and is here so the
  * spike can price both branches rather than assuming the lowest common
  * denominator. See docs/spike-epub.md.
@@ -34,7 +41,7 @@
  * incidental; the doc argues them.
  *
  *   node tools/md2epub.mjs <package-dir|file.md> [--out x.epub] [--stage 1|2|3]
- *                          [--math tex|auto|svg|png] [--no-images] [--scale 2]
+ *                          [--math tex|auto|crop|svg|png] [--no-images] [--scale 2]
  *
  * Requires `npm i -D mathjax-full` for --math svg|png (spike-only dev dep).
  */
@@ -601,10 +608,16 @@ async function build(opts) {
     },
     math(tex, display) {
       stats.math++;
-      const key = `${display ? "D" : "I"} ${tex}`;
+      const ordinal = display ? ++displayOrdinal : 0;
+      // Identical formulas normally share one rendering. Crops must not: two
+      // equations with the same LaTeX are two different regions of two different
+      // pages, and collapsing them would shift every later crop out of step with
+      // the sidecar. So in crop mode a display formula is keyed by position.
+      const key =
+        display && math === "crop" ? `D#${ordinal}` : `${display ? "D" : "I"} ${tex}`;
       if (!seenMath.has(key)) {
         stats.mathUnique++;
-        seenMath.set(key, { tex, display, index: seenMath.size, html: null });
+        seenMath.set(key, { tex, display, ordinal, index: seenMath.size, html: null });
       }
       // Rendering is async and this is called from a sync walk, so emit a
       // placeholder now and patch it after the render pass.
@@ -622,8 +635,36 @@ async function build(opts) {
   const rendered = new Map();
   for (const entry of seenMath.values()) {
     let html;
-    const asText = math === "auto" && !entry.display ? trivialMathToXhtml(entry.tex) : null;
-    if (asText) {
+    // Crop first: it is the author's own typesetting, and unlike the LaTeX it
+    // cannot have been truncated by the model. Every failure path below falls
+    // through to rendering, so a missing or mismatched crop costs nothing.
+    let cropHtml = null;
+    if (math === "crop" && entry.display) {
+      const rec = sidecar[entry.ordinal - 1];
+      if (!rec) {
+        stats.failures.push(`no sidecar entry for display formula ${entry.ordinal}`);
+      } else if (!sameTex(rec.tex, entry.tex)) {
+        // The note was edited, or the formulas moved. Do not guess.
+        stats.failures.push(`sidecar formula ${rec.id} no longer matches the note; rendering instead`);
+      } else if (!availableImages.has(`${rec.id}.png`)) {
+        stats.failures.push(`sidecar lists ${rec.id} but images/${rec.id}.png is missing`);
+      } else {
+        const href = `images/${rec.id}.png`;
+        if (!assets.some((a) => a.href === href)) {
+          assets.push({ href, id: `math-${rec.id}`, type: "image/png", file: join(imagesDir, `${rec.id}.png`) });
+        }
+        stats.mathAsCrop++;
+        // No explicit size: a cropped equation is a block image, and the
+        // stylesheet's max-width keeps it inside the column on any screen.
+        cropHtml = `<div class="math-display"><img src="${href}" alt="${escapeXml(entry.tex.trim())}"/></div>`;
+      }
+    }
+
+    const asText =
+      (math === "auto" || math === "crop") && !entry.display ? trivialMathToXhtml(entry.tex) : null;
+    if (cropHtml) {
+      html = cropHtml;
+    } else if (asText) {
       stats.mathAsText++;
       html = asText;
     } else if (math === "tex") {
@@ -634,7 +675,6 @@ async function build(opts) {
       try {
         const r = await renderMath(entry.tex, entry.display);
         if (math === "svg") {
-          usesSvg = true;
           html = entry.display ? `<div class="math-display">${r.svg}</div>` : r.svg;
         } else {
           const png = await svgToPng(r.svg, r.widthEx, r.heightEx, scale);
@@ -661,7 +701,12 @@ async function build(opts) {
   const patch = (html) => html.replace(/(\d+)/g, (_m, i) => rendered.get(Number(i)) ?? "");
 
   for (const ch of chapters) {
-    zip.add(`OEBPS/${ch.href}`, wrapXhtml(ch.title || title, patch(ch.html)));
+    const xhtml = wrapXhtml(ch.title || title, patch(ch.html));
+    // epubcheck OPF-015: `properties="svg"` is an error on a document that does
+    // not actually contain inline SVG, so it is decided per chapter, after
+    // rendering, rather than set for the whole book the moment any formula is SVG.
+    ch.hasSvg = xhtml.includes("<svg");
+    zip.add(`OEBPS/${ch.href}`, xhtml);
   }
   zip.add("OEBPS/style.css", STYLESHEET);
 
@@ -681,7 +726,7 @@ async function build(opts) {
       (c, i) =>
         // EPUB 3 requires declaring inline SVG with properties="svg"; omitting
         // it is the single most common way a hand-built EPUB fails epubcheck.
-        `<item id="ch${i}" href="${c.href}" media-type="application/xhtml+xml"${usesSvg ? ' properties="svg"' : ""}/>`,
+        `<item id="ch${i}" href="${c.href}" media-type="application/xhtml+xml"${c.hasSvg ? ' properties="svg"' : ""}/>`,
     ),
     ...assets.map((a) => `<item id="${a.id}" href="${escapeXml(a.href)}" media-type="${a.type}"/>`),
   ];
@@ -756,7 +801,7 @@ async function main(argv) {
   }
   if (!args.input) {
     process.stderr.write(
-      "usage: md2epub.mjs <package-dir|file.md> [--out x.epub] [--stage 1|2|3] [--math tex|auto|svg|png] [--no-images] [--scale N]\n",
+      "usage: md2epub.mjs <package-dir|file.md> [--out x.epub] [--stage 1|2|3] [--math tex|auto|crop|svg|png] [--no-images] [--scale N]\n",
     );
     return 2;
   }
@@ -805,6 +850,7 @@ async function main(argv) {
           total: stats.math,
           unique: stats.mathUnique,
           asText: stats.mathAsText,
+          asCrop: stats.mathAsCrop,
           asImage: stats.mathAsImage,
           kb: +(stats.mathBytes / 1024).toFixed(1),
         },
