@@ -102,16 +102,6 @@ PDF → Markdown is crowded — but every existing option gives up one of *effor
 | OSS engines (Docling, Marker CLI) | ❌ Python env, flags | ✅ | ✅ |
 | **This project** | **✅** | **✅** | **✅** |
 
-## Install
-
-Not yet in the community directory. Until then, build it yourself:
-
-```bash
-cd plugin && npm install && npm run deploy
-```
-
-then enable **Reflow** in Settings → Community plugins. Full build and
-development instructions: [plugin/README.md](./plugin/README.md).
 
 ## Architecture (target)
 
@@ -123,15 +113,29 @@ PDF ─┬─ fast tier: text-layer extract + layout heuristics (clean PDFs)
    Structured document IR (JSON: typed blocks, provenance page/bbox,
    formula nodes carry LaTeX payloads)
               │
-   ┌──────────┼──────────────┐
-   ▼          ▼              ▼
- Markdown   EPUB          one-pager (later)
- + images/  (per-device
- (canonical) math: MathML
-             or image)
+              ▼
+ ┌───────────────────────────────────────────────────┐
+ │ Markdown package — canonical, and the only thing  │      any other
+ │ downstream ever reads                             │ ◀──  Obsidian note
+ │   <stem>.md   headings, tables, $LaTeX$ math      │      (no package:
+ │   images/     figures + a crop of each equation   │       math stays
+ │   meta.json   which crop belongs to which formula │       LaTeX source)
+ └───────────────────────────────────────────────────┘
+              │
+   ┌──────────┴───────────┐
+   ▼                      ▼
+ EPUB                one-pager (later)
+ (equations as the
+  page crops)
 ```
+
+The IR is where the provenance lives, but nothing downstream sees it: conversion
+materializes the bboxes into `images/` + `meta.json`, and the exporter reads only
+the package. `engine-js/src/epub.ts` has no imports at all — hand it a note's text
+and a way to read its images and it produces a book, which is why **Export to
+EPUB** works on any note in the vault, not just a converted one.
 
 - **Engine, target (primary):** a portable **TypeScript + ONNX** core in [`engine-js/`](./engine-js/) — a single compact VLM ([granite-docling-258M](https://huggingface.co/onnx-community/granite-docling-258M-ONNX), official ONNX export, Apache-2.0) running under [transformers.js](https://huggingface.co/blog/transformersjs-v4). Full page image → **DocTags** → Markdown, entirely in JS: no Python, no sidecar binary. The *same* core embeds in a Node CLI, an Obsidian desktop plugin, a browser extension, and eventually mobile — only `device`/`dtype` change. Rationale and route comparison: [docs/perf-and-portability.md](./docs/perf-and-portability.md).
 - **Engine, bootstrap (reference oracle):** Python Docling (MIT) — the fast path that answered *is the quality there?* and froze the artifact contract + fixture suite. Retained as the **modular fallback** and a **numeric cross-check** for the VLM (it copies table cells from the PDF text layer; the VLM can invent them). Not on the shipping path.
-- **Math policy:** LaTeX-first (`$...$`) — Obsidian renders it natively; images only as low-confidence fallback and for e-ink EPUB export.
+- **Math policy:** LaTeX-first (`$...$`) in the Markdown — Obsidian renders it natively, so the plugin ships no maths renderer. The EPUB cannot rely on that (Kindle drops MathML and silently discards SVG), so display equations export as the crop taken from the page during conversion and inline maths becomes `<sup>`/`<sub>`. Notes with no crops still export, with their equations as LaTeX source. See [Formulas](#formulas).
 - **Never silently wrong (VLM hedge):** VLM-emitted numeric table cells are reconciled against the pdf.js text layer; the fixture numeric-fidelity checks are the arbiter before any quantized build becomes default.
