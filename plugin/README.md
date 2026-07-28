@@ -7,6 +7,12 @@ on **WebGPU** in Obsidian's renderer via the shared [`engine-js`](../engine-js) 
 no page limits, and the PDF never leaves your machine. Output is a vault package
 named from the PDF: `1706.03762v7/1706.03762v7.md` + `images/` + `meta.json`.
 
+Right-click any note → **Export to EPUB** (or the *Export active note to EPUB*
+command) to get an `.epub` beside it for a Kindle or other e-reader. Optionally
+every conversion can write one automatically — see [Settings](#settings). The
+exporter adds no dependencies: it builds the ZIP with `CompressionStream` and
+needs no maths renderer, for the reason in [Formulas](#formulas).
+
 This is the M4 shell over the fixture-validated engine (see [../PLAN.md](../PLAN.md)).
 `main.ts` is only Obsidian wiring; the whole conversion pipeline is `engine-js`.
 
@@ -302,6 +308,78 @@ and pdf.js answers that by hanging, not throwing. Pass a fresh `.slice()` each t
 
 A full loop is `npm run deploy && node tools/obsidian-drive.mjs reload`, then an `eval`.
 
+## Formulas
+
+Equations reach the Markdown by two different routes, and it is worth knowing
+which is which, because only one of them is structured.
+
+**Display equations** come from a DocTags `<formula>` block. The parser wraps the
+model's LaTeX in `$$…$$`, and `fixFormula` repairs it enough for MathJax —
+balancing braces, turning a trailing `&&(1)` into `\tag{1}`, wrapping stray
+alignment markers in `\begin{aligned}`.
+
+**Inline maths** is never tagged at all: the model writes `$…$` inside the OCR
+text of a paragraph, so `h$_{t}$` simply passes through as characters. Nothing in
+the pipeline treats it as maths, and `fixFormula` never touches it.
+
+**In Obsidian, both just work.** Obsidian bundles MathJax 3.2.2 and renders
+`$$…$$` as display and `$…$` inline, natively. The plugin ships no maths
+renderer and never has — its job is to write Markdown that Obsidian renders.
+
+### In the EPUB, equations are images of the original
+
+E-readers are a different problem: Kindle renders neither LaTeX nor MathML, and
+in testing it accepted inline SVG and then **silently discarded it** — a book
+that validates cleanly with the equations missing.
+
+So conversion also crops each display equation straight out of the rendered page,
+exactly as it already does for figures, and writes it as `images/formula-N.png`
+with an entry in `meta.json`. The export uses those crops. The `.md` is untouched
+by this — it still carries `$$…$$`, and Obsidian still renders it.
+
+This is cheaper *and* more faithful than re-rendering the LaTeX:
+
+- **No dependency.** Bundling MathJax would have added ~662 KB gzipped, about
+  45% to the plugin. The crops cost nothing, and measured on the Transformer
+  paper they were 4.5× smaller than rendered equation images (19.3 KB vs 88.3 KB).
+- **It cannot be wrong about the maths.** The crop is the page. A renderer can
+  only ever be as good as the model's transcription — and the transcription is
+  sometimes truncated (below).
+- Inline maths needs no images: in this corpus it is entirely sub/superscripts,
+  which become `<sup>`/`<sub>` and stay searchable, selectable and legible in
+  night mode.
+
+Notes with no crops — hand-written, or converted before this existed — still
+export: their equations come out as LaTeX source, and the notice says how many
+and that re-converting the PDF will fix it.
+
+### Truncated formulas, and the click-to-reveal fallback
+
+`fixFormula` is by design a liar: it balances braces so MathJax renders
+*something*, which means a formula the model cut off part-way renders cleanly and
+looks right. Equation (1) of the Transformer paper comes out as
+`softmax(QK^T/√d_k` — no closing paren, no `V`, no equation number — and Obsidian
+draws it without complaint.
+
+Conversion now detects this. Parentheses and brackets are the tell, since
+`fixFormula` never touches them, so an unbalanced one survives; a page whose
+generation stopped early condemns its last formula too. Across both test runs
+this flagged exactly the truncated equations and no complete ones.
+
+A flagged formula gets a **collapsed** callout under it, so the note stays clean
+until you want it:
+
+```markdown
+$$\ A t t e n t i o n ( Q , K , V ) = \text {softmax} ( \frac { Q K ^ { T } } { \sqrt { d _ { k } } }$$
+
+> [!warning]- This formula may be incomplete — show the original from the PDF
+> ![formula-1](images/formula-1.png)
+```
+
+Click it and you get the equation as the author set it. The count also appears in
+the conversion-warnings banner at the top of the note. In the EPUB the callout is
+dropped, because there the equation *is* already that image.
+
 ## Other known gaps (tracked in ../PLAN.md, M4)
 
 - Weights use the fp32 WebGPU dtype validated in the harness (q4f16 garbles today);
@@ -322,3 +400,7 @@ A full loop is `npm run deploy && node tools/obsidian-drive.mjs reload`, then an
 - **Per-page time limit** — generation for a page is cut off after this long and the
   page is flagged incomplete. Raise it for dense pages or a slower GPU.
 - **Convert in a background thread** — on by default; see above.
+- **Also export EPUB** — off by default. When on, every conversion writes
+  `<note>.epub` next to the Markdown. Off is the right default because the
+  Markdown *is* the artifact inside Obsidian; export is fast and lossless from
+  the package, so it can be asked for per-note instead.

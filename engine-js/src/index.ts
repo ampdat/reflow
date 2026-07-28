@@ -75,11 +75,11 @@ export async function convertPdf(
 
   // Formula crops sit alongside the figures but are counted separately: `images`
   // has always meant "figures extracted", and something may already depend on it.
-  const formulaMeta: Array<{ id: string; tex: string; page: number }> = [];
+  const formulaMeta: Array<{ id: string; tex: string; page: number; suspect?: boolean }> = [];
   for (const f of doc.formulas) {
     if (!f.png) continue;
     await writeFile(join(imagesDir, `${f.id}.png`), f.png);
-    formulaMeta.push({ id: f.id, tex: f.tex, page: f.page });
+    formulaMeta.push({ id: f.id, tex: f.tex, page: f.page, ...(f.suspect ? { suspect: true } : {}) });
   }
 
   const mdPath = join(outDir, `${stem}.md`);
@@ -111,6 +111,8 @@ export async function convertPdf(
 
 export { assembleDocument } from "./core/convert.js";
 export { parseDocTags } from "./doctags.js";
-export { cleanMath, fixFormula } from "./mathjax.js";
+export { cleanMath, fixFormula, formulaLooksTruncated } from "./mathjax.js";
+export { buildEpub } from "./epub.js";
+export type { EpubInput, EpubResult, FormulaSidecar } from "./epub.js";
 export type { Meta } from "./meta.js";
 export type { AssembledDocument, PageSource, Vlm } from "./core/types.js";

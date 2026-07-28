@@ -45,3 +45,28 @@ export function fixFormula(tex: string): string {
 export function cleanMath(md: string): string {
   return md.replace(MATH_BLOCK_RE, (_m, body: string) => `$$${fixFormula(body)}$$`);
 }
+
+/**
+ * Does this formula look like the model stopped transcribing part-way through?
+ *
+ * This exists because `fixFormula` is, by design, a liar. It balances braces so
+ * MathJax will render *something*, which means a formula truncated mid-expression
+ * renders cleanly and looks correct — equation (1) of the Transformer paper comes
+ * out as `softmax(QK^T/sqrt(d_k)` with no closing paren and no `V`, and Obsidian
+ * draws it without complaint. The only existing signal is a page-level "generation
+ * stopped early" warning, which does not say *which* formula was damaged.
+ *
+ * Parentheses and brackets are the tell: `fixFormula` never touches them, so an
+ * unbalanced one survives into the output. Measured against both `attention` runs
+ * this flags exactly the two truncated equations and neither complete one, and it
+ * agrees with the independent page-level truncation signal.
+ *
+ * Deliberately conservative — a false positive costs one collapsed callout, a
+ * false negative leaves a wrong equation looking right.
+ */
+export function formulaLooksTruncated(tex: string): boolean {
+  // An escaped delimiter is a literal character, not a grouping.
+  const s = tex.replace(/\\[(){}[\]]/g, "");
+  const count = (re: RegExp): number => (s.match(re) || []).length;
+  return count(/\(/g) !== count(/\)/g) || count(/\[/g) !== count(/\]/g);
+}

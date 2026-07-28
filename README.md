@@ -1,6 +1,6 @@
 # Reflow
 
-**An Obsidian plugin that converts a PDF into clean, readable Markdown entirely on your device. Figures, tables, and math survive. Nothing uploads.**
+**An Obsidian plugin that converts a PDF into clean, readable Markdown — and exports it to EPUB for e-readers — entirely on your device. Figures, tables, and math survive. Nothing uploads.**
 
 Right-click a PDF in your vault → **Convert to Markdown**. A vision model runs
 locally on your GPU and writes a Markdown package next to the source:
@@ -9,9 +9,14 @@ locally on your GPU and writes a Markdown package next to the source:
 1706.03762v7.pdf
 1706.03762v7/
   1706.03762v7.md     # frontmatter, headings, tables, $LaTeX$ math, figure links
-  images/             # extracted figures
+  images/             # extracted figures, and a crop of each display equation
   meta.json           # engine, timings, warnings
 ```
+
+Right-click any note → **Export to EPUB** for a `.epub` you can read on a Kindle
+or other e-reader, with the figures embedded and the equations as images of the
+original. Conversion can write one automatically too — see
+[Formulas](#formulas) for why equations are handled that way.
 
 No API key, no account, no page limit, and the document never leaves your
 machine to be converted. A two-column paper becomes one reflowable column in
@@ -21,12 +26,16 @@ your own typography — which is the point of the name.
 
 - **Convert to Markdown** in a PDF's right-click menu, or the *Convert active
   PDF to Markdown* command.
+- **Export to EPUB** in any note's right-click menu, or the *Export active note
+  to EPUB* command. Takes well under a second — it reads the package, not the
+  PDF, so it works on notes converted long ago.
 - A progress dialog shows the page, live token count, elapsed time and estimate.
   Close it to keep reading — conversion carries on and moves to the status bar.
 - Multiple conversions can run at the same time with separate progress in the
   status bar.
-- Settings: output folder, page limit, per-page time limit, compute backend, and
-  whether to convert on a background thread.
+- Settings: output folder, page limit, per-page time limit, compute backend,
+  whether to convert on a background thread, and whether to also write an EPUB
+  on every conversion (off by default).
 
 **Desktop only**, and a WebGPU-capable machine is strongly preferred: without one
 the plugin falls back to the CPU, says so in red, and takes minutes per page.
@@ -35,6 +44,40 @@ caches them — that and two pinned CDN assets are the only network use, itemise
 in [plugin/README.md](./plugin/README.md#network-use).
 
 **Note: Windows and Linux are untested.**
+
+## Formulas
+
+Equations take two routes into the Markdown, and only one is structured.
+**Display equations** come from a tagged `<formula>` block and are wrapped in
+`$$…$$`; **inline maths** is never tagged — the model writes `$…$` inside a
+paragraph's text, so `h$_{t}$` just passes through. In Obsidian both simply
+render: Obsidian bundles MathJax and draws `$$…$$` and `$…$` natively. The
+plugin ships no maths renderer.
+
+**The EPUB cannot rely on that.** Kindle renders neither LaTeX nor MathML, and in
+testing it accepted inline SVG and then silently discarded it — a book that
+validates cleanly with the equations missing. So conversion crops each display
+equation straight out of the rendered page, exactly as it already does for
+figures, and the EPUB uses those crops. Nothing about the Markdown changes.
+
+That turned out to be both cheaper and more faithful than re-rendering the LaTeX.
+Cheaper: bundling MathJax would have added ~662 KB gzipped, roughly 45% to the
+plugin, and the crops came out 4.5× smaller than rendered equation images.
+More faithful: **the crop is the page**, whereas a renderer can only be as good
+as the model's transcription — which is sometimes truncated.
+
+**Truncated formulas are detected and offered back to you.** The repair pass
+balances braces so MathJax renders *something*, which means a formula the model
+cut off short renders cleanly and looks correct — equation (1) of the Transformer
+paper loses its closing paren, its `V` and its equation number, silently. When
+the conversion spots one, the note gets a collapsed callout under the equation:
+
+> [!warning]- This formula may be incomplete — show the original from the PDF
+
+Click it and the original from the PDF appears. The count also joins the
+conversion-warnings banner at the top of the note. Full detail in
+[plugin/README.md](./plugin/README.md#formulas); the measurements are in
+[docs/spike-epub.md](./docs/spike-epub.md).
 
 ## Thesis
 

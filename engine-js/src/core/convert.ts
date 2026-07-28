@@ -9,7 +9,7 @@
 
 import { parseDocTags } from "../doctags.js";
 import { frontmatter } from "../frontmatter.js";
-import { cleanMath, fixFormula } from "../mathjax.js";
+import { cleanMath, fixFormula, formulaLooksTruncated } from "../mathjax.js";
 import { warnImageOnly } from "../meta.js";
 import type {
   AssembledDocument,
@@ -62,6 +62,43 @@ function warningCallout(warnings: string[]): string {
  */
 function pageMarker(page: number, issues: string[]): string {
   return `> [!warning] Page ${page} may be incomplete — ${issues.join("; ")}.`;
+}
+
+/**
+ * Offer the reader the original equation, next to the one we may have got wrong.
+ *
+ * `fixFormula` balances braces so a truncated formula still renders, which means
+ * the note shows a clean, plausible, *incorrect* equation with nothing to say so.
+ * We already hold the answer: the crop taken from the page raster is the
+ * equation as the author set it, and it cannot be truncated.
+ *
+ * The `-` suffix makes the callout collapsed by default, so a suspect formula
+ * costs one quiet line under the maths until the reader clicks it — the note is
+ * not turned into a gallery of duplicate equations, but nothing is hidden either.
+ */
+function formulaFallback(id: string): string {
+  return (
+    `> [!warning]- This formula may be incomplete — show the original from the PDF\n` +
+    `> ![${id}](images/${id}.png)`
+  );
+}
+
+/**
+ * Insert a fallback callout after each suspect formula in one page's Markdown.
+ *
+ * `parsed.markdown` contains exactly one `$$...$$` block per entry in
+ * `parsed.formulas`, in the same order, so the nth block is the nth formula.
+ */
+function annotateSuspectFormulas(
+  md: string,
+  suspects: Array<{ id: string; suspect: boolean }>,
+): string {
+  let n = -1;
+  return md.replace(/\$\$[\s\S]+?\$\$/g, (block) => {
+    n += 1;
+    const f = suspects[n];
+    return f && f.suspect ? `${block}\n\n${formulaFallback(f.id)}` : block;
+  });
 }
 
 /** Thrown when `signal` aborts. `name` follows the DOM convention. */
@@ -158,16 +195,25 @@ export async function assembleDocument(
     // here rather than left to `cleanMath` below, so the recorded LaTeX is
     // character-identical to what ends up in the Markdown — a consumer pairing
     // crops with `$$...$$` blocks has something exact to match on.
-    for (const f of parsed.formulas) {
-      formulas.push({
-        id: f.id,
-        page: p,
-        tex: fixFormula(f.tex),
-        png: f.bbox ? await page.crop(f.bbox) : null,
-      });
+    const pageFormulas: AssembledFormula[] = [];
+    for (const [i, f] of parsed.formulas.entries()) {
+      const tex = fixFormula(f.tex);
+      const png = f.bbox ? await page.crop(f.bbox) : null;
+      // Two independent signals, either of which is enough. The delimiter check
+      // is per-formula and precise; page truncation is coarser, so it only
+      // condemns the *last* formula on the page — that is where a generation
+      // that stopped early does its damage.
+      const lastOnPage = i === parsed.formulas.length - 1;
+      const suspect =
+        png !== null && (formulaLooksTruncated(tex) || (lastOnPage && truncated !== null));
+      pageFormulas.push({ id: f.id, page: p, tex, png, suspect });
       formulaCount++;
     }
-    bodyParts.push(parsed.markdown);
+    formulas.push(...pageFormulas);
+
+    // The fallback is only worth offering when there is actually a crop to show,
+    // which `suspect` already requires.
+    bodyParts.push(annotateSuspectFormulas(parsed.markdown, pageFormulas));
 
     // Flag the damage where the reader will meet it, not only in a list at the
     // top that points at a page number the reflowed markdown no longer has.
@@ -191,6 +237,13 @@ export async function assembleDocument(
     warnings.push(
       `table${spanPages.length > 1 ? "s" : ""} on page${spanPages.length > 1 ? "s" : ""} ` +
         `${spanPages.join(", ")} contained merged cells rendered blank — verify against source`,
+    );
+  }
+  const suspectCount = formulas.filter((f) => f.suspect).length;
+  if (suspectCount) {
+    warnings.push(
+      `${suspectCount} formula${suspectCount > 1 ? "s" : ""} may be incomplete — ` +
+        `the original from the PDF is inlined below each, collapsed`,
     );
   }
   if (lastPage < pages.pageCount) {

@@ -87,6 +87,12 @@ export interface AssembledFormula {
   /** LaTeX exactly as it appears in the Markdown, i.e. post-`fixFormula`. */
   tex: string;
   png: Uint8Array | null;
+  /**
+   * The transcription looks truncated, so the note offers the crop as a
+   * fallback. Implies `png` is non-null — there is no point flagging a formula
+   * we cannot show the reader.
+   */
+  suspect: boolean;
 }
 
 /** Everything the orchestrator produces, before any file/vault I/O. */

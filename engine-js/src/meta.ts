@@ -35,7 +35,7 @@ export interface Meta {
    * trusting ordinal position in a note the reader may since have edited.
    * Omitted when the document has none, so clean notes gain no field.
    */
-  formulas?: Array<{ id: string; tex: string; page: number }>;
+  formulas?: Array<{ id: string; tex: string; page: number; suspect?: boolean }>;
   markdown_chars: number;
   /** Per-stage wall times (ms): pdf load/raster, VLM inference, assembly. */
   timings_ms: { load: number; inference: number; assemble: number };

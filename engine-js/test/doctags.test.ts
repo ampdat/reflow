@@ -10,7 +10,7 @@
 import { describe, expect, it } from "vitest";
 
 import { parseDocTags } from "../src/doctags.js";
-import { cleanMath, fixFormula } from "../src/mathjax.js";
+import { cleanMath, fixFormula, formulaLooksTruncated } from "../src/mathjax.js";
 
 const SAMPLE = [
   "<doctag>",
@@ -115,5 +115,38 @@ describe("MathJax repairs", () => {
 
   it("repairs every block in a document", () => {
     expect(cleanMath("text $$a_{b$$ more")).toBe("text $$a_{b}$$ more");
+  });
+});
+
+/**
+ * The cases here are the real transcriptions from the `attention` fixture — two
+ * that the model truncated and three it got whole. They are the spec: brace
+ * repair deliberately hides truncation, so this is the only thing standing
+ * between a reader and a clean-looking, wrong equation.
+ */
+describe("truncated-formula detection", () => {
+  it("flags an equation cut off inside a function call", () => {
+    expect(
+      formulaLooksTruncated(
+        "\\ A t t e n t i o n ( Q , K , V ) = \\text {softmax} ( \\frac { Q K ^ { T } } { \\sqrt { d _ { k } } }",
+      ),
+    ).toBe(true);
+  });
+
+  it("flags an equation cut off mid-number", () => {
+    expect(formulaLooksTruncated("P E _ { ( p o s , 2 i ) } = \\sin ( p o s / 1 0 0 0")).toBe(true);
+  });
+
+  it("leaves complete equations alone", () => {
+    expect(
+      formulaLooksTruncated("F F N ( x ) = \\max ( 0 , x W _ { 1 } + b _ { 1 } ) W _ { 2 } + b _ { 2 }"),
+    ).toBe(false);
+    expect(formulaLooksTruncated("\\begin{aligned}a = b \\\\ c = d\\end{aligned}")).toBe(false);
+    expect(formulaLooksTruncated("e = mc^2")).toBe(false);
+  });
+
+  it("treats an escaped delimiter as a literal, not a grouping", () => {
+    expect(formulaLooksTruncated("f \\( x \\)")).toBe(false);
+    expect(formulaLooksTruncated("[ 0 , 1 ]")).toBe(false);
   });
 });

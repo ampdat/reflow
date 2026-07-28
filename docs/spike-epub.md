@@ -2,8 +2,8 @@
 
 *2026-07-27. A time-boxed spike, not a decision. Everything marked **[measured]** comes from a
 local run made while writing this; **[estimated]** is arithmetic; **[unverified]** is something the
-spike deliberately did not settle and says so. Prototype: `engine-js/tools/md2epub.mjs` and
-`plugin/tools/mathjax-probe.js`.*
+spike deliberately did not settle and says so. Prototype: `engine-js/tools/md2epub.mjs` (since
+replaced — see the note in §2) and `plugin/tools/mathjax-probe.js`.*
 
 The ask: get an EPUB out of the Markdown we already produce, in three steps — text first, then
 images, then formulas as images so it survives on Kindle and small e-readers. All three work. The
@@ -27,10 +27,16 @@ before anyone builds it for real.
 
 ## 2. What the prototype does
 
+> **Note (superseded).** This section describes the throwaway prototype the numbers in §3 and §4
+> were measured with. It has since been replaced by the shipped implementation — `src/epub.ts`,
+> used by both the plugin and `tools/md2epub.ts` — which keeps only the mode that won (§7) and
+> carries no `--stage`/`--math` switches and no MathJax. The prototype and its modes are preserved
+> in git history; the measurements below are left exactly as taken.
+
 ```bash
 cd engine-js
-node tools/md2epub.mjs <package-dir> --math crop   # no dependencies; see §7
 npm i -D mathjax-full                              # only for --math svg|png|auto
+node tools/md2epub.mjs <package-dir> --stage 3
 ```
 
 Input is the frozen artifact contract (`<stem>/<stem>.md` + `images/`); output is one `.epub` beside
@@ -41,7 +47,7 @@ it. `--stage 1|2|3` are presets over two real knobs, `--math` and `--no-images`:
 | 1 | literal LaTeX in `<code>` | no | the container: ZIP layout, OPF, nav, XHTML well-formedness |
 | 2 | literal LaTeX | yes | manifest, media types, path plumbing |
 | 3 | `auto` — HTML where possible, PNG otherwise | yes | the Kindle-safe target |
-| — | `--math crop` | yes | **the recommendation.** Uses the converter's formula crops; no renderer at all (§7) |
+| — | `--math crop` | yes | **the one that shipped.** Uses the converter's formula crops; no renderer at all (§7) |
 | — | `--math svg` | yes | the *better* answer on real EPUB 3 readers (see §4b) |
 
 The note is split into one XHTML document per top-level heading (24 for `attention`), because a
@@ -306,6 +312,11 @@ mode remains a wart shared with any raster path. And nothing has yet been opened
 Kindle.
 
 ## 8. If we build it
+
+*Built. `src/epub.ts` is the shipped implementation, used by both `tools/md2epub.ts` and the
+plugin's **Export to EPUB** command; conversion detects truncated formulas and offers the crop
+under them, collapsed. The list below is what the spike recommended, kept for the record.*
+
 
 1. **Stages 1 and 2 are basically done and cost nothing.** A "Export to EPUB" command producing a
    text-and-figures EPUB is a small, self-contained piece of work with no new dependencies.

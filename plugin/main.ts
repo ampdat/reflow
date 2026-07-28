@@ -33,6 +33,7 @@ import * as pdfjs from "pdfjs-dist";
 
 import type { AssembledDocument } from "../engine-js/src/core/types.js";
 import { convertPdfBrowser } from "../engine-js/src/browser/engine.js";
+import { buildEpub, type FormulaSidecar } from "../engine-js/src/epub.js";
 import {
   deviceCandidates,
   isSlowDevice,
@@ -102,6 +103,15 @@ interface Settings {
    * fail outright. WebNN is opt-in only — see `deviceCandidates()`.
    */
   device: DevicePreference;
+  /**
+   * Also write an `.epub` next to the Markdown on every conversion.
+   *
+   * Off by default: most readers read in Obsidian, where the Markdown already
+   * is the artifact, and an EPUB nobody opens is just a file in the vault.
+   * Export is fast and lossless from the package, so it can be asked for at any
+   * time from the note's context menu instead.
+   */
+  exportEpub: boolean;
 }
 
 const DEFAULT_SETTINGS: Settings = {
@@ -110,6 +120,7 @@ const DEFAULT_SETTINGS: Settings = {
   perPageTimeoutSec: 300,
   useWorker: true,
   device: "auto",
+  exportEpub: false,
 };
 
 /**
@@ -421,6 +432,16 @@ export default class ReflowPlugin extends Plugin {
               .onClick(() => this.convert(file)),
           );
         }
+        if (file instanceof TFile && file.extension === "md") {
+          menu.addItem((item) =>
+            item
+              .setTitle("Export to EPUB")
+              .setIcon("book")
+              .onClick(() => {
+                void this.exportEpubSafely(file);
+              }),
+          );
+        }
       }),
     );
 
@@ -431,6 +452,17 @@ export default class ReflowPlugin extends Plugin {
         const f = this.app.workspace.getActiveFile();
         if (!(f instanceof TFile) || f.extension !== "pdf") return false;
         if (!checking) void this.convert(f);
+        return true;
+      },
+    });
+
+    this.addCommand({
+      id: "export-active-note-to-epub",
+      name: "Export active note to EPUB",
+      checkCallback: (checking: boolean) => {
+        const f = this.app.workspace.getActiveFile();
+        if (!(f instanceof TFile) || f.extension !== "md") return false;
+        if (!checking) void this.exportEpubSafely(f);
         return true;
       },
     });
@@ -545,12 +577,12 @@ export default class ReflowPlugin extends Plugin {
       // Formula crops: a sidecar for exports that cannot render LaTeX. The note
       // itself is untouched and still carries `$$...$$`, which is what Obsidian
       // renders — nothing here changes how the vault reads.
-      const formulas: Array<{ id: string; tex: string; page: number }> = [];
+      const formulas: Array<{ id: string; tex: string; page: number; suspect?: boolean }> = [];
       for (const f of doc.formulas) {
         if (!f.png) continue;
         const ab = f.png.buffer.slice(f.png.byteOffset, f.png.byteOffset + f.png.byteLength);
         await this.writeBinary(`${folder}/images/${f.id}.png`, ab as ArrayBuffer);
-        formulas.push({ id: f.id, tex: f.tex, page: f.page });
+        formulas.push({ id: f.id, tex: f.tex, page: f.page, ...(f.suspect ? { suspect: true } : {}) });
       }
       await this.writeText(mdPath, doc.markdown);
 
@@ -594,6 +626,13 @@ export default class ReflowPlugin extends Plugin {
       new Notice(`Converted → ${mdPath}${warn}`, 6000);
 
       const md = this.app.vault.getAbstractFileByPath(mdPath);
+
+      // Opt-in second artifact. Done after meta.json is written, because the
+      // exporter reads the formula crops back out of it, and never allowed to
+      // fail the conversion — the Markdown is the contract, the EPUB is a
+      // convenience.
+      if (this.settings.exportEpub && md instanceof TFile) await this.exportEpubSafely(md);
+
       if (md instanceof TFile) await this.app.workspace.getLeaf(true).openFile(md);
 
       return {
@@ -815,6 +854,85 @@ export default class ReflowPlugin extends Plugin {
     this.workerUrl = null;
   }
 
+  /**
+   * `exportEpub` with the failure reported to the reader rather than the console.
+   * Menu items and commands are fire-and-forget, so an unhandled rejection here
+   * would be silent — the one failure mode a user cannot diagnose.
+   */
+  private async exportEpubSafely(file: TFile): Promise<void> {
+    try {
+      await this.exportEpub(file);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error("[reflow] EPUB export failed", err);
+      new Notice(`EPUB export failed: ${message}`, 8000);
+    }
+  }
+
+  /**
+   * Write `<note>.epub` beside a converted note.
+   *
+   * Works on any Markdown note, not just a freshly converted one: everything it
+   * needs is in the package next to the note. When `meta.json` carries formula
+   * crops the equations come out as the author's own typesetting; without them
+   * (a hand-written note, or a package converted before crops existed) they come
+   * out as LaTeX source and the reader is told so, rather than silently losing
+   * the maths.
+   */
+  async exportEpub(file: TFile): Promise<Record<string, unknown>> {
+    const folder = file.parent?.path ?? "";
+    const epubPath = `${folder}/${file.basename}.epub`;
+
+    let formulas: FormulaSidecar[] | undefined;
+    const metaFile = this.app.vault.getAbstractFileByPath(`${folder}/meta.json`);
+    if (metaFile instanceof TFile) {
+      try {
+        const meta = JSON.parse(await this.app.vault.cachedRead(metaFile)) as {
+          formulas?: FormulaSidecar[];
+        };
+        formulas = meta.formulas;
+      } catch {
+        /* an unreadable sidecar is a missing sidecar, not a failure */
+      }
+    }
+
+    const result = await buildEpub({
+      markdown: await this.app.vault.cachedRead(file),
+      titleFallback: file.basename,
+      formulas,
+      readAsset: async (rel) => {
+        const asset = this.app.vault.getAbstractFileByPath(normalizePath(`${folder}/${rel}`));
+        if (!(asset instanceof TFile)) return null;
+        return new Uint8Array(await this.app.vault.readBinary(asset));
+      },
+    });
+
+    const bytes = result.bytes;
+    await this.writeBinary(
+      epubPath,
+      bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer,
+    );
+
+    // The one thing worth interrupting for: equations that came out as source.
+    // It is fixable (re-convert the PDF), so say so rather than leaving the
+    // reader to discover it on a device.
+    const note = result.formulasAsText
+      ? ` — ${result.formulasAsText} equation(s) exported as LaTeX source; re-convert the PDF for equation images`
+      : "";
+    new Notice(`Exported → ${epubPath}${note}`, result.formulasAsText ? 10000 : 5000);
+    for (const w of result.warnings) console.warn("[reflow]", w);
+
+    return {
+      ok: true,
+      epubPath,
+      chapters: result.chapters,
+      images: result.images,
+      formulasAsCrop: result.formulasAsCrop,
+      formulasAsText: result.formulasAsText,
+      warnings: result.warnings,
+    };
+  }
+
   private async ensureFolder(path: string): Promise<void> {
     if (!this.app.vault.getAbstractFileByPath(path)) {
       try {
@@ -929,6 +1047,20 @@ class ReflowSettingTab extends PluginSettingTab {
       .addToggle((t) =>
         t.setValue(this.plugin.settings.useWorker).onChange(async (v) => {
           this.plugin.settings.useWorker = v;
+          await this.plugin.saveSettings();
+        }),
+      );
+
+    new Setting(containerEl)
+      .setName("Also export EPUB")
+      .setDesc(
+        "Write an .epub next to the Markdown on every conversion, for reading on a " +
+          "Kindle or other e-reader. You can also export any note at any time from " +
+          "its right-click menu.",
+      )
+      .addToggle((t) =>
+        t.setValue(this.plugin.settings.exportEpub).onChange(async (v) => {
+          this.plugin.settings.exportEpub = v;
           await this.plugin.saveSettings();
         }),
       );
