@@ -558,10 +558,18 @@ without the per-platform binaries. Keep it in the back pocket if a machine ever 
       `plugin/` can no longer see it (and silently assumed a mobile plugin, which made Electron's
       `process` an undefined global). `plugin/check-manifest.mjs` asserts the submission rules
       directly and gates the release workflow.
-- [ ] **Submit.** Blocked on two things that are the author's to do: the repository is still
-      **private**, and there is **no release yet** — the directory needs a tag equal to the manifest
-      version carrying `main.js`, `manifest.json`, `styles.css`. Then community.obsidian.md; the
-      `obsidian-releases` PR route is gone.
+- [x] **Submitted; 0.1.0 failed review; 0.1.1 answers it.** Two blocking Errors, both the same root
+      cause: inline `eslint-disable` comments for an `obsidianmd/*` rule are rejected outright —
+      the console logging they suppressed was only a Warning. Everything else in a very long report
+      was a Warning or Recommendation. Fixed: directives gone (dev logs moved onto the probe, where
+      the driver can assert on them instead of a human reading a console); `authorUrl` → the org
+      profile; artifact attestations on the release assets.
+      **The finding worth remembering: the review reads the bundle, not the intent.** `main.js`
+      carried `require("fs")`/`path`/`os` and the plugin was reported to users as able to "read and
+      write any file on the system" — from 92 KB of onnxruntime emscripten glue inlined *as a text
+      string* and, since ORT fixed the guard upstream ~1.24, never used at all. Now decided at build
+      time and inlined only when a patch is genuinely needed. Also `isEvalSupported: false` for
+      pdf.js, so a document's Type-4 shading functions are interpreted rather than compiled.
 - [ ] **Windows and Linux remain untested.** The code no longer assumes WebGPU (probe → candidates →
       CPU fallback, all unit-tested against fake navigators), but nothing has run on either OS.
 

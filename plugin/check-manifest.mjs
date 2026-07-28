@@ -40,7 +40,6 @@ const d = manifest.description ?? "";
 check(d.length <= 250, `description must be 250 characters or fewer (is ${d.length})`);
 check(d.endsWith("."), "description must end with a period");
 check(!/^(this is a |this plugin|a plugin)/i.test(d), "description must not start with 'This is a plugin'");
-// eslint-disable-next-line no-control-regex -- deliberately matching non-ASCII
 check(!/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/u.test(d), "description must not contain emoji");
 
 check("fundingUrl" in manifest === false || !!manifest.fundingUrl, "remove fundingUrl if unused");

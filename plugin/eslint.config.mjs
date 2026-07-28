@@ -20,8 +20,9 @@ export default tseslint.config(
     languageOptions: {
       parserOptions: { project: "./tsconfig.json", tsconfigRootDir: import.meta.dirname },
       globals: {
-        // Build-time constant, `define`d by esbuild (see virtual.d.ts).
+        // Build-time constants, `define`d by esbuild (see virtual.d.ts).
         __REFLOW_DEV__: "readonly",
+        __REFLOW_ORT_GLUE_PATCHED__: "readonly",
         // `manifest.json` lives at the repository root, because that is where
         // the community directory reads it from. This config's base path is
         // plugin/, so the obsidianmd rules can no longer find it and fall back
@@ -61,6 +62,15 @@ export default tseslint.config(
       "obsidianmd/prefer-active-doc": "off",
       "obsidianmd/rule-custom-message": "off",
     },
+  },
+  {
+    // The bridge that carries worker-side warnings and errors to the renderer's
+    // console (see the comment at the call site). Configured here rather than
+    // with an inline `eslint-disable`, which Obsidian's review rejects outright
+    // for obsidianmd/* rules — and rightly: a rule turned off in a config file
+    // is visible, one turned off mid-file is not.
+    files: ["worker-host.ts"],
+    rules: { "obsidianmd/rule-custom-message": "off" },
   },
   {
     // probe.ts is development-only: release builds resolve it to probe-stub.ts

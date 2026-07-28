@@ -141,7 +141,7 @@ export interface LoadPdfBrowserOptions {
 }
 
 /**
- * Extra `getDocument` parameters needed when there is no document.
+ * `getDocument` parameters for this host.
  *
  * Font handling matters as much as the canvas: with `disableFontFace` left at
  * its browser default, pdf.js registers `FontFace`s against `document.fonts`.
@@ -150,8 +150,22 @@ export interface LoadPdfBrowserOptions {
  * the one the fixture suite validated.
  */
 function docParams(opts: LoadPdfBrowserOptions): Record<string, unknown> {
-  if (typeof document !== "undefined") return {};
+  /**
+   * Never compile PDF-supplied code.
+   *
+   * pdf.js turns Type 4 (PostScript calculator) shading functions into
+   * JavaScript with `new Function(src, …)` when it can, and falls back to an
+   * interpreter when it can't. The speed only matters for gradient-heavy
+   * artwork, and we rasterize once per page; a document conversion tool
+   * compiling expressions out of the document it was handed is a bad trade at
+   * any speed, and it is what Obsidian's review flags as dynamic code
+   * execution. Applies on *both* paths — the renderer fallback runs the same
+   * pdf.js as the worker.
+   */
+  const shared = { isEvalSupported: false };
+  if (typeof document !== "undefined") return shared;
   return {
+    ...shared,
     CanvasFactory: OffscreenCanvasFactory,
     FilterFactory: NoopFilterFactory,
     disableFontFace: true,

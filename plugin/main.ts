@@ -342,6 +342,8 @@ export default class ReflowPlugin extends Plugin {
   private workerUrl: string | null = null;
   /** How the last conversion actually ran, for the probe and the log. */
   lastRunMode: "worker" | "renderer" | null = null;
+  /** Environment the conversion worker reported on boot; read by the probe. */
+  lastWorkerEnv: Record<string, unknown> | null = null;
   /** Compute-backend probe, run once per session (see `probeOnce`). */
   private deviceProbe: Promise<DeviceProbe> | null = null;
   /** Its resolved value, for the synchronous message path. */
@@ -363,12 +365,6 @@ export default class ReflowPlugin extends Plugin {
    */
   private installDevProbe(): void {
     const w = window as unknown as { __reflow_spoofResult?: string };
-    // eslint-disable-next-line obsidianmd/rule-custom-message -- dev build only
-    console.log(
-      `[reflow] backend spoof: ${w.__reflow_spoofResult} | ` +
-        `navigator.gpu: ${typeof navigator !== "undefined" && "gpu" in navigator} | ` +
-        `ort glue: ${ortConfig.strategy} (${ortConfig.glueBytes} B)`,
-    );
 
     installProbe({
       // The injected platform libs, so an ad-hoc probe can exercise pdf.js or
@@ -376,6 +372,14 @@ export default class ReflowPlugin extends Plugin {
       // plugin rebuild — same rationale as exposing `ort`.
       pdfjs,
       transformers,
+      /**
+       * Whether the esbuild banner's `process.release.name` rename took, read
+       * back off the global it wrote. This used to be logged at load; it is
+       * pulled rather than pushed now, which costs nothing (the plugin is
+       * loaded long before anyone asks) and keeps a diagnostic that only
+       * developers want out of every user's console.
+       */
+      backendSpoof: () => w.__reflow_spoofResult ?? null,
       readBinary: async (path: string) => {
         const f = this.app.vault.getAbstractFileByPath(path);
         if (!(f instanceof TFile)) throw new Error(`not a file in the vault: ${path}`);
@@ -394,6 +398,15 @@ export default class ReflowPlugin extends Plugin {
         return this.settings.useWorker;
       },
       lastRunMode: () => this.lastRunMode,
+      /**
+       * What the conversion worker reported about its environment on boot —
+       * WebGPU, OffscreenCanvas, whether the backend spoof took there too.
+       *
+       * Also formerly a `console.log`. Holding it is strictly more useful than
+       * printing it: `tools/obsidian-drive.mjs` can assert on the values
+       * instead of a human reading them out of a console.
+       */
+      lastWorkerEnv: () => this.lastWorkerEnv,
       ortConfig,
       benchPage: async (path: string, opts?: Record<string, unknown>) => {
         const f = this.app.vault.getAbstractFileByPath(path);
@@ -679,8 +692,7 @@ export default class ReflowPlugin extends Plugin {
           signal,
           ...hooks,
           onReady: (env) => {
-            // eslint-disable-next-line obsidianmd/rule-custom-message -- dev build only
-            if (__REFLOW_DEV__) console.log("[reflow] worker ready:", env);
+            this.lastWorkerEnv = env;
           },
         });
       }

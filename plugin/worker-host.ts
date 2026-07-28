@@ -116,14 +116,12 @@ export async function convertPdfInWorker(
             opts.onStep?.(msg.tokens);
             break;
           case "log":
-            // Warnings and errors from the worker are a user's only view into a
-            // conversion that went wrong — the thread has no other way to
-            // reach the console — so they always come through. Plain logs are
-            // diagnostic chatter and stay in development builds.
-            /* eslint-disable obsidianmd/rule-custom-message -- worker diagnostics channel */
+            // Warnings and errors only. A worker is its own console target, so
+            // without this bridge a conversion that failed inside the thread
+            // leaves nothing behind for the user or for a bug report — that is
+            // why this survives the "avoid logging to console" guideline, and
+            // why the worker's ordinary chatter does not.
             if (msg.level !== "log") console[msg.level](`[reflow worker] ${msg.text}`);
-            else if (__REFLOW_DEV__) console.log(`[reflow worker] ${msg.text}`);
-            /* eslint-enable obsidianmd/rule-custom-message */
             break;
           case "done":
             resolve(msg.doc);
