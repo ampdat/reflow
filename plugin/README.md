@@ -48,6 +48,12 @@ npm install                 # once
 npm run deploy              # dev build → dist/, then install into a vault
 ```
 
+Every script below also runs from the **repo root** — the root `package.json`
+holds nothing but `npm --prefix` shortcuts to this package (and to `engine-js`
+for `test`). It exists because `npm run deploy` one directory up from here is a
+`Could not read package.json` error rather than a build, which is a silly way to
+learn where you are standing.
+
 - `npm run build` — release bundle → `dist/{main.js,manifest.json,styles.css}`,
   which is **exactly** the file set Obsidian's community installer downloads.
 - `npm run build:dev` — same, plus the debug shim (see below).

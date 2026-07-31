@@ -1,0 +1,16 @@
+{
+  "name": "reflow",
+  "private": true,
+  "description": "Repo-root shortcuts. The real packages are plugin/ and engine-js/; every script here just runs one of theirs in place, so `npm run deploy` works from wherever you happen to be standing.",
+  "scripts": {
+    "build": "npm --prefix plugin run build",
+    "build:dev": "npm --prefix plugin run build:dev",
+    "dev": "npm --prefix plugin run dev",
+    "deploy": "npm --prefix plugin run deploy",
+    "install:vault": "npm --prefix plugin run install:vault --",
+    "lint": "npm --prefix plugin run lint",
+    "typecheck": "npm --prefix plugin run typecheck",
+    "test": "npm --prefix engine-js run test",
+    "test:offline": "npm --prefix engine-js run test:offline"
+  }
+}
