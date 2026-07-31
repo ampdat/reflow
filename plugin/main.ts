@@ -27,6 +27,7 @@ import {
   Setting,
   TAbstractFile,
   TFile,
+  TFolder,
   normalizePath,
 } from "obsidian";
 import * as transformers from "@huggingface/transformers";
@@ -44,6 +45,7 @@ import {
   type DevicePreference,
   type DeviceProbe,
 } from "../engine-js/src/browser/device.js";
+import { packageName } from "./naming.js";
 import { pdfWorkerUrl } from "./assets.js";
 import { configureOrt, tuneOrtThreads } from "./ort-env.js";
 import { benchPage, benchPages, installProbe, setOrtWasmPaths } from "./probe.js";
@@ -113,6 +115,23 @@ interface Settings {
    * time from the note's context menu instead.
    */
   exportEpub: boolean;
+  /**
+   * Name the package after the *title read from the PDF* rather than the PDF's
+   * filename, and move the PDF inside it.
+   *
+   * On by default, because the vault is the thing being browsed. Papers arrive
+   * named the way whoever served them felt like naming them — `1706.03762v7`,
+   * `sdarticle(3)`, `download` — and a folder list of those is a list of
+   * accession numbers, not of anything anyone remembers reading. The title is
+   * already extracted; this is only where it gets used.
+   *
+   * Moving the PDF in is the half that makes it a *package* rather than a
+   * folder next to a file: everything about one paper is one thing to open,
+   * move, sync or delete, and the source is still there to re-convert from.
+   * Off restores the previous layout exactly — named from the filename, PDF
+   * left where it was.
+   */
+  folderByTitle: boolean;
 }
 
 /**
@@ -129,6 +148,7 @@ const DEFAULT_SETTINGS: Settings = {
   useWorker: true,
   device: "auto",
   exportEpub: false,
+  folderByTitle: true,
 };
 
 /**
@@ -657,13 +677,8 @@ export default class ReflowPlugin extends Plugin {
         },
       });
 
-      // Named from the PDF, not the extracted title: it is the identifier the
-      // reader filed the paper under, it is stable across runs, and it stops
-      // every converted note in the vault from being called "document".
-      const parent = file.parent?.path ?? "";
-      const base = this.settings.outputFolder.trim() || parent;
-      const folder = normalizePath(`${base}/${file.basename}`);
-      const mdPath = `${folder}/${file.basename}.md`;
+      const { folder, stem } = this.packageDestination(file, doc.title);
+      const mdPath = `${folder}/${stem}.md`;
       await this.ensureFolder(folder);
       await this.ensureFolder(`${folder}/images`);
 
@@ -688,7 +703,24 @@ export default class ReflowPlugin extends Plugin {
         await this.writeBinary(`${folder}/images/${f.id}.png`, ab as ArrayBuffer);
         formulas.push({ id: f.id, tex: f.tex, page: f.page, ...(f.suspect ? { suspect: true } : {}) });
       }
-      await this.writeText(mdPath, doc.markdown);
+      // After the images, so a write that is going to fail has already failed
+      // and left the PDF where the reader put it; before the note, whose
+      // `source:` has to name where the PDF actually ended up.
+      const layoutWarnings: string[] = [];
+      const sourceBefore = file.path;
+      if (this.settings.folderByTitle) {
+        const problem = await this.movePdfIntoPackage(file, folder);
+        if (problem) {
+          layoutWarnings.push(problem);
+          console.warn("[reflow]", problem);
+          new Notice(problem, 8000);
+        }
+      }
+      const markdown =
+        file.path === sourceBefore
+          ? doc.markdown
+          : ReflowPlugin.retargetSource(doc.markdown, sourceBefore, file.path);
+      await this.writeText(mdPath, markdown);
 
       // The plugin used to write only the markdown and the figures, which left
       // the artifact contract asymmetric (the CLI and the Python oracle both
@@ -707,11 +739,14 @@ export default class ReflowPlugin extends Plugin {
         pages: doc.pageCount,
         images,
         ...(formulas.length ? { formulas } : {}),
-        markdown_chars: doc.markdown.length,
+        markdown_chars: markdown.length,
         timings_ms: { load: 0, inference: doc.timings.inference, assemble: doc.timings.assemble },
         wall_ms: Math.round(performance.now() - started),
         execution_providers: doc.executionProviders,
-        warnings: doc.warnings,
+        // The layout ones are appended rather than merged into the note's
+        // banner: the Markdown was assembled before the package existed, so the
+        // banner cannot mention them and meta.json is the only durable record.
+        warnings: [...doc.warnings, ...layoutWarnings],
         // Plugin-only, and worth keeping: whether the run was in a worker, and
         // the per-page cost series that made the WebGPU stall diagnosable.
         run_mode: this.lastRunMode,
@@ -744,7 +779,7 @@ export default class ReflowPlugin extends Plugin {
         folder,
         mdPath,
         title: doc.title,
-        markdownChars: doc.markdown.length,
+        markdownChars: markdown.length,
         figures: doc.figures.length,
         warnings: doc.warnings,
         mode: this.lastRunMode,
@@ -1191,6 +1226,96 @@ export default class ReflowPlugin extends Plugin {
     };
   }
 
+  /**
+   * Where a conversion's files go, and what its note is called.
+   *
+   * Re-conversion is what makes this more than a string join. Once the PDF has
+   * been moved in, it *lives* in its own package, so deriving the destination
+   * from the source's parent the second time would put a package inside a
+   * package — and a third run one deeper again. When the PDF is already sitting
+   * in one of ours, that folder is the destination.
+   *
+   * Its existing name is then also the stem, in preference to re-deriving one
+   * from the title. Two runs of a vision model over the same page can disagree
+   * about a subtitle or a line break, and re-deriving would answer that by
+   * leaving the reader's note behind — orphaned, still linked to, next to a
+   * near-identically named new one. Converting the same paper twice should
+   * update the note that is already there.
+   */
+  private packageDestination(file: TFile, title: string): { folder: string; stem: string } {
+    const parent = file.parent;
+    if (parent && !parent.isRoot() && this.isPackageFolder(parent)) {
+      return { folder: parent.path, stem: parent.name };
+    }
+    const base = this.settings.outputFolder.trim() || parent?.path || "";
+    const stem = this.settings.folderByTitle ? packageName(title, file.basename) : file.basename;
+    return { folder: normalizePath(`${base}/${stem}`), stem };
+  }
+
+  /**
+   * Does this folder look like one of ours?
+   *
+   * The signature is the note *named after the folder* plus meta.json, which is
+   * the artifact contract itself and is not a shape a folder falls into by
+   * accident. Deliberately not a check on the folder's name against the title:
+   * that answer changes when the model's does, and this question has to keep
+   * returning the same answer for a folder we already wrote.
+   */
+  private isPackageFolder(folder: TFolder): boolean {
+    const has = (p: string): boolean =>
+      this.app.vault.getAbstractFileByPath(normalizePath(p)) instanceof TFile;
+    return has(`${folder.path}/meta.json`) && has(`${folder.path}/${folder.name}.md`);
+  }
+
+  /**
+   * Point the note's `source:` at where the PDF actually ended up.
+   *
+   * The engine stamps the frontmatter with the path it was handed, and that is
+   * the path the PDF had before the package it now lives in existed. Left
+   * alone, every converted note would carry one property naming the original
+   * document and it would be the one place the document is not.
+   *
+   * Rewritten only inside the leading `---` block, and only where the line
+   * still holds exactly the path we passed in, so a body containing a line that
+   * begins `source:` is never touched.
+   */
+  private static retargetSource(markdown: string, from: string, to: string): string {
+    const end = markdown.indexOf("\n---", 3);
+    if (!markdown.startsWith("---\n") || end === -1) return markdown;
+    const line = `source: ${JSON.stringify(from)}`;
+    const head = markdown.slice(0, end);
+    if (!head.includes(line)) return markdown;
+    return head.replace(line, `source: ${JSON.stringify(to)}`) + markdown.slice(end);
+  }
+
+  /**
+   * Move the PDF in beside its Markdown, keeping the name it arrived with.
+   *
+   * Its name is the reader's own filing, and often the only place a preprint's
+   * identifier survives (`1706.03762v7`), so the package renames nothing — it
+   * only gathers. Through `fileManager` rather than the vault so that links and
+   * embeds pointing at the PDF are rewritten instead of broken.
+   *
+   * Returns what went wrong, or null. Never throws: the Markdown is the
+   * contract, and a PDF that stayed put is a tidiness problem, not a failed
+   * conversion.
+   */
+  private async movePdfIntoPackage(file: TFile, folder: string): Promise<string | null> {
+    const target = normalizePath(`${folder}/${file.name}`);
+    if (file.path === target) return null;
+    if (this.app.vault.getAbstractFileByPath(target)) {
+      return `Left ${file.name} where it was — ${folder} already holds a file of that name.`;
+    }
+    try {
+      await this.app.fileManager.renameFile(file, target);
+      return null;
+    } catch (e: any) {
+      return `Left ${file.name} where it was — moving it into ${folder} failed: ${String(
+        e?.message ?? e,
+      )}`;
+    }
+  }
+
   private async ensureFolder(path: string): Promise<void> {
     if (!this.app.vault.getAbstractFileByPath(path)) {
       try {
@@ -1248,6 +1373,20 @@ class ReflowSettingTab extends PluginSettingTab {
             this.plugin.settings.outputFolder = v;
             await this.plugin.saveSettings();
           }),
+      );
+
+    new Setting(containerEl)
+      .setName("Name folders by document title")
+      .setDesc(
+        "Name each package and its note after the title read from the PDF, and move " +
+          "the PDF inside, so one paper is one folder. Off: name them after the PDF's " +
+          "filename and leave the PDF where it is.",
+      )
+      .addToggle((t) =>
+        t.setValue(this.plugin.settings.folderByTitle).onChange(async (v) => {
+          this.plugin.settings.folderByTitle = v;
+          await this.plugin.saveSettings();
+        }),
       );
 
     new Setting(containerEl)

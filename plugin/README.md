@@ -5,7 +5,10 @@ Right-click a PDF in your vault → **Convert to Markdown**. Runs
 on **WebGPU** in Obsidian's renderer via the shared [`engine-js`](../engine-js) core
 (pdf.js + transformers.js + the DocTags→Markdown parser). No server, no API keys,
 no page limits, and the PDF never leaves your machine. Output is a vault package
-named from the PDF: `1706.03762v7/1706.03762v7.md` + `images/` + `meta.json`.
+named from the title the model read off the page — `Attention Is All You
+Need/Attention Is All You Need.md` + `images/` + `meta.json` — with the source
+PDF moved in beside them under its own name. See
+[Package layout](#package-layout).
 
 Right-click any note → **Export to EPUB** (or the *Export active note to EPUB*
 command) to get an `.epub` beside it for a Kindle or other e-reader. Optionally
@@ -70,6 +73,45 @@ or if it's already enabled, **reload** (Cmd+R) / toggle it off·on to pick up th
 - The first convert downloads model weights with a progress dialog, then caches
   them in the renderer. Later converts skip the download.
 - Reflow probes the machine before it starts and picks a backend; see below.
+
+## Package layout
+
+```
+Attention Is All You Need/
+  Attention Is All You Need.md
+  images/
+  meta.json
+  1706.03762v7.pdf
+```
+
+The folder and the note are named from `doc.title` — the heading the model read
+off page 1, falling back to the PDF's filename when it found none, which is what
+everything used to be named after. `plugin/naming.ts` makes that a filename with
+[`filenamify`](https://github.com/sindresorhus/filenamify) at its default 100
+characters, then handles the two things a filename sanitizer has no way to know
+about Obsidian: `#^[]` are the link syntax, so a note whose name contains one
+cannot be `[[linked]]` to, and a leading dot does not hide a folder here so much
+as remove it — Obsidian excludes dot-folders from the vault, so ".NET Internals"
+would convert into a folder invisible from inside the app.
+
+The PDF is moved in through `fileManager.renameFile`, not the vault's, so links
+and embeds pointing at it are rewritten rather than broken. It keeps its own
+name: that name is the reader's filing, and for a preprint it is usually the only
+place the identifier (`1706.03762v7`) survives.
+
+**Re-conversion** is why `packageDestination()` exists rather than a string join.
+By the second run the PDF *lives* in its package, so deriving the destination
+from its parent again would nest a package inside a package, and once more each
+run after that. A folder holding both `meta.json` and a note named after itself
+is one of ours; when the PDF is already in one, that folder is the destination
+and **its** name is the stem. The second half matters as much as the first: two
+runs of a vision model over the same page can disagree about a subtitle, and
+re-deriving the name would answer that by orphaning the note the reader already
+has links to, next to a near-identically named new one.
+
+Turning **Name folders by document title** off restores the previous layout
+exactly — `<pdf-stem>/<pdf-stem>.md`, PDF left where it was. The anti-nesting
+rule still applies, since burying a package is never what was wanted.
 
 ## Compute backends
 
@@ -486,6 +528,10 @@ dropped, because there the equation *is* already that image.
 ## Settings
 
 - **Compute backend** — Automatic (WebGPU → CPU), or force one; see above.
+- **Name folders by document title** — on by default. Names the package and its
+  note from the title read off the page and moves the PDF in beside them; see
+  [Package layout](#package-layout). Off gives `<pdf-stem>/<pdf-stem>.md` with
+  the PDF left where it was.
 - **Output folder** — vault folder for packages (empty = alongside the PDF).
 - **Max pages** — 0 = all; set small for a quick test.
 - **Per-page time limit** — generation for a page is cut off after this long and the

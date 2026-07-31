@@ -17,6 +17,7 @@
   },
   "dependencies": {
     "@huggingface/transformers": "^4.2.0",
+    "filenamify": "^7.0.2",
     "onnxruntime-web": "1.26.0-dev.20260416-b7804b056c",
     "pdfjs-dist": "^4.10.38"
   },

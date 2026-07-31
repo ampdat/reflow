@@ -3,15 +3,22 @@
 **An Obsidian plugin that converts a PDF into clean, readable Markdown — and exports it to EPUB for e-readers — entirely on your device. Figures, tables, and math survive. Nothing uploads.**
 
 Right-click a PDF in your vault → **Convert to Markdown**. A vision model runs
-locally on your GPU and writes a Markdown package next to the source:
+locally on your GPU and gathers the whole paper into one folder, named with the
+title it read off the page:
 
 ```
-1706.03762v7.pdf
-1706.03762v7/
-  1706.03762v7.md     # frontmatter, headings, tables, $LaTeX$ math, figure links
-  images/             # extracted figures, and a crop of each display equation
-  meta.json           # engine, timings, warnings
+Attention Is All You Need/
+  Attention Is All You Need.md   # frontmatter, headings, tables, $LaTeX$ math, figure links
+  images/                        # extracted figures, and a crop of each display equation
+  meta.json                      # engine, timings, warnings
+  1706.03762v7.pdf               # the source, moved in under its own name
 ```
+
+So the vault reads as a shelf of papers rather than a list of accession numbers,
+and one paper is one thing to open, move or delete. The PDF keeps the name it
+arrived with — often the only place its identifier survives. Turn off **Name
+folders by document title** to get the previous layout instead: named from the
+PDF's filename, with the PDF left where it was.
 
 Right-click any note → **Export to EPUB** for a `.epub` you can read on a Kindle
 or other e-reader, with the figures embedded and the equations as images of the
@@ -38,9 +45,10 @@ your own typography — which is the point of the name.
   Close it to keep reading — conversion carries on and moves to the status bar.
 - Multiple conversions can run at the same time with separate progress in the
   status bar.
-- Settings: output folder, page limit, per-page time limit, compute backend,
-  whether to convert on a background thread, and whether to also write an EPUB
-  on every conversion (off by default).
+- Settings: whether to name folders by document title (on by default), output
+  folder, page limit, per-page time limit, compute backend, whether to convert
+  on a background thread, and whether to also write an EPUB on every conversion
+  (off by default).
 
 **Desktop only**, and a WebGPU-capable machine is strongly preferred: without one
 the plugin falls back to the CPU, says so in red, and takes minutes per page.

@@ -3,10 +3,11 @@
  * Python bootstrap (src/pdf2md/convert.py) so both engines emit the same
  * artifact contract.
  *
- * This file used to own a title -> folder-name sanitizer too. Packages are now
- * named from the source PDF filename, which is a valid filename by construction,
- * so there is nothing left to sanitize; the title's only remaining job is the
- * `title:` property below.
+ * This file used to own a title -> folder-name sanitizer too. Naming a package
+ * is the host's decision, not the engine's — the CLI names one from the source
+ * PDF's filename, and the Obsidian plugin from the title (plugin/naming.ts,
+ * which has a vault's own rules to answer to). The title's remaining job here is
+ * the `title:` property below.
  */
 
 /** PDF metadata surfaced by the loader (often empty on arXiv PDFs). */
