@@ -34,7 +34,7 @@ import * as pdfjs from "pdfjs-dist";
 
 import type { AssembledDocument } from "../engine-js/src/core/types.js";
 import { convertPdfBrowser } from "../engine-js/src/browser/engine.js";
-import { buildEpub, type FormulaSidecar } from "../engine-js/src/epub.js";
+import { buildEpub, type EpubResult, type FormulaSidecar } from "../engine-js/src/epub.js";
 import {
   deviceCandidates,
   isSlowDevice,
@@ -273,6 +273,22 @@ class ConversionState {
  */
 /** Where Amazon distributes the app. */
 const SEND_TO_KINDLE_URL = "https://www.amazon.com/sendtokindle";
+
+/**
+ * Reach a Node builtin from the renderer.
+ *
+ * `window.require` specifically, and never a static `import`. A top-level
+ * `node:` import is rejected by the community-directory review (it would break a
+ * mobile build outright), and `await import("node:…")` does not work either: the
+ * specifier goes to Chromium's module loader, which tries to *fetch* it and
+ * fails with "Failed to fetch dynamically imported module". Electron's renderer
+ * `require` is the only route that works — verified in Obsidian.
+ *
+ * Desktop-only by construction; every caller is behind `Platform.isDesktop`.
+ */
+function nodeRequire<T>(id: string): T {
+  return (window as unknown as { require: (id: string) => T }).require(id);
+}
 
 /** Carries whether the failure was "app not installed", which has its own dialog. */
 class SendToKindleError extends Error {
@@ -942,8 +958,17 @@ export default class ReflowPlugin extends Plugin {
   }
 
   /**
-   * Hand a note's EPUB to Amazon's Send to Kindle app, exporting it first if
-   * there isn't a current one.
+   * Hand a note's EPUB to Amazon's Send to Kindle app.
+   *
+   * The EPUB is built to a **temporary file**, not into the vault. It is a
+   * courier, not an artifact: once Amazon has it the local copy has no further
+   * use, and leaving one beside every note means a megabyte per paper that a
+   * synced vault (iCloud, Dropbox, Obsidian Sync) then carries forever. Anyone
+   * who *wants* the file has "Export to EPUB" for exactly that.
+   *
+   * Building every time also deletes a whole class of bug: there is no cached
+   * copy that can be older than the note, so there is no way to send a stale
+   * book. It costs ~40 ms.
    *
    * Deliberately stops at Amazon's confirmation window. There is no CLI and no
    * scripting dictionary to drive it further, but that is not why: this is the
@@ -952,31 +977,71 @@ export default class ReflowPlugin extends Plugin {
    * belongs in Amazon's own UI where the target account is visible.
    */
   async sendToKindle(file: TFile): Promise<Record<string, unknown>> {
-    const adapter = this.app.vault.adapter;
-    if (!(adapter instanceof FileSystemAdapter)) {
-      throw new Error("Send to Kindle needs a local vault folder.");
-    }
-
-    const epubPath = `${file.parent?.path ?? ""}/${file.basename}.epub`;
-    const existing = this.app.vault.getAbstractFileByPath(epubPath);
-    // Re-export when there is nothing there, and when the note has moved on
-    // since the last one: silently sending a stale book is a worse failure than
-    // spending the ~40 ms, and it is invisible until someone reads it.
-    const stale = existing instanceof TFile && existing.stat.mtime < file.stat.mtime;
-    const exported = !(existing instanceof TFile) || stale;
-    if (exported) await this.exportEpub(file);
-
-    if (!(await adapter.exists(epubPath))) {
-      throw new Error(`no EPUB was produced at ${epubPath}`);
-    }
-    await this.openInSendToKindle(adapter.getFullPath(epubPath));
+    const result = await this.buildEpubForNote(file);
+    const epubPath = await this.writeTempEpub(file.basename, result.bytes);
+    await this.openInSendToKindle(epubPath);
 
     new Notice(
-      `${exported ? "Exported and opened" : "Opened"} in Send to Kindle — ` +
-        "it uploads to Amazon when you confirm there.",
-      8000,
+      `Opened in Send to Kindle — it uploads to Amazon when you confirm there.` +
+        ReflowPlugin.unrenderedNote(result),
+      result.formulasAsText ? 10000 : 8000,
     );
-    return { ok: true, epubPath, exported, stale };
+    return {
+      ok: true,
+      epubPath,
+      temporary: true,
+      formulasAsCrop: result.formulasAsCrop,
+      formulasAsText: result.formulasAsText,
+    };
+  }
+
+  /**
+   * Write the EPUB to a private temp directory and return its absolute path.
+   *
+   * The *filename* has to be the note's, not a random temp name: Send to Kindle
+   * shows it, and Amazon uses it as the document's title in the library. So the
+   * uniqueness lives in the directory instead.
+   *
+   * Nothing is deleted on the way out. The app reads the file when the reader
+   * confirms, which may be minutes later, so cleaning up eagerly would race the
+   * upload; instead each run first sweeps its own leftovers older than a day.
+   */
+  private async writeTempEpub(basename: string, bytes: Uint8Array): Promise<string> {
+    if (!Platform.isDesktop) throw new Error("Send to Kindle is desktop-only.");
+    const fs = nodeRequire<typeof import("node:fs/promises")>("node:fs/promises");
+    const os = nodeRequire<typeof import("node:os")>("node:os");
+    const path = nodeRequire<typeof import("node:path")>("node:path");
+
+    const root = path.join(os.tmpdir(), "reflow-kindle");
+    await fs.mkdir(root, { recursive: true });
+    await ReflowPlugin.sweepTemp(fs, path, root);
+
+    const dir = await fs.mkdtemp(path.join(root, "send-"));
+    const target = path.join(dir, `${basename}.epub`);
+    await fs.writeFile(target, bytes);
+    return target;
+  }
+
+  /** Best-effort removal of previous hand-offs; never fails the send. */
+  private static async sweepTemp(
+    fs: typeof import("node:fs/promises"),
+    path: typeof import("node:path"),
+    root: string,
+  ): Promise<void> {
+    const DAY_MS = 24 * 60 * 60 * 1000;
+    try {
+      for (const name of await fs.readdir(root)) {
+        const dir = path.join(root, name);
+        try {
+          const stat = await fs.stat(dir);
+          if (Date.now() - stat.mtimeMs > DAY_MS) await fs.rm(dir, { recursive: true, force: true });
+        } catch {
+          /* vanished or unreadable — nothing to clean */
+        }
+      }
+    } catch {
+      /* the sweep is housekeeping; a failure here must not block the send */
+    }
   }
 
   /**
@@ -1059,9 +1124,13 @@ export default class ReflowPlugin extends Plugin {
    * out as LaTeX source and the reader is told so, rather than silently losing
    * the maths.
    */
-  async exportEpub(file: TFile): Promise<Record<string, unknown>> {
+  /**
+   * Build a note's EPUB in memory. Shared by both destinations — the vault, and
+   * the temporary file handed to Send to Kindle — so the two can never diverge
+   * in what they actually contain.
+   */
+  private async buildEpubForNote(file: TFile): Promise<EpubResult> {
     const folder = file.parent?.path ?? "";
-    const epubPath = `${folder}/${file.basename}.epub`;
 
     let formulas: FormulaSidecar[] | undefined;
     const metaFile = this.app.vault.getAbstractFileByPath(`${folder}/meta.json`);
@@ -1086,21 +1155,30 @@ export default class ReflowPlugin extends Plugin {
         return new Uint8Array(await this.app.vault.readBinary(asset));
       },
     });
+    for (const w of result.warnings) console.warn("[reflow]", w);
+    return result;
+  }
 
+  /** The one thing worth interrupting for: equations that came out as source. */
+  private static unrenderedNote(result: EpubResult): string {
+    return result.formulasAsText
+      ? ` — ${result.formulasAsText} equation(s) exported as LaTeX source; re-convert the PDF for equation images`
+      : "";
+  }
+
+  async exportEpub(file: TFile): Promise<Record<string, unknown>> {
+    const folder = file.parent?.path ?? "";
+    const epubPath = `${folder}/${file.basename}.epub`;
+
+    const result = await this.buildEpubForNote(file);
     const bytes = result.bytes;
     await this.writeBinary(
       epubPath,
       bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer,
     );
 
-    // The one thing worth interrupting for: equations that came out as source.
-    // It is fixable (re-convert the PDF), so say so rather than leaving the
-    // reader to discover it on a device.
-    const note = result.formulasAsText
-      ? ` — ${result.formulasAsText} equation(s) exported as LaTeX source; re-convert the PDF for equation images`
-      : "";
+    const note = ReflowPlugin.unrenderedNote(result);
     new Notice(`Exported → ${epubPath}${note}`, result.formulasAsText ? 10000 : 5000);
-    for (const w of result.warnings) console.warn("[reflow]", w);
 
     return {
       ok: true,
