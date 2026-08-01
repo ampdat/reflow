@@ -119,6 +119,59 @@ Turning **Name folders by document title** off restores the previous layout
 exactly — `<pdf-stem>/<pdf-stem>.md`, PDF left where it was. The anti-nesting
 rule still applies, since burying a package is never what was wanted.
 
+### Why the note is *inside* the folder
+
+`Title/Title.md` is the **folder note** convention — the Notion-style shape where
+a folder has a note that is about the folder. It costs a click in the file
+explorer (expand, then open), and that cost is real, so here is why it is the one
+we take and what the alternatives actually cost.
+
+The click is only the file explorer's. The Quick Switcher (`Cmd+O`) reaches the
+note by title in one keystroke from anywhere, which is how most people open a
+known note, and conversion opens the note itself when it finishes. For anyone who
+does browse by folder, [Folder Notes](https://lostpaul.github.io/obsidian-folder-notes/)
+makes clicking the folder open the note and can hide the note from the explorer
+entirely — one click, and the layout below is exactly what it expects.
+
+Every layout picks one of two things: **one thing to move**, or **one click to
+read**. Nothing gets both, which is why the ecosystem has a plugin for each
+direction. We take the first, because a paper is a unit — figures, formula crops,
+provenance and the source PDF are worthless apart from each other, and one folder
+is one thing to move, sync, back up or delete.
+
+The alternatives, and the specific reason each lost:
+
+- **Note beside a folder of the same name** (the
+  [Note Companion Folder](https://community.obsidian.md/plugins/note-companion-folder)
+  shape). One click, but Obsidian's file explorer lists *all folders above all
+  files* with no core setting to interleave them
+  ([long-standing request](https://forum.obsidian.md/t/same-sort-order-for-folder-and-files/9516)),
+  so after a handful of papers the note and its own folder are nowhere near each
+  other on screen. It buys a click and spends the adjacency that made the pairing
+  legible.
+- **Notes flat, assets under a central `assets/`.** The best *browsing* — a flat
+  list of titles — and the strongest case against what we do. It loses the unit:
+  moving or deleting a paper silently orphans its images, and Obsidian's link
+  updating does not follow a folder nobody linked to.
+- **Images inlined as base64.** One genuinely self-contained file, and a trap:
+  Obsidian's editor
+  [degrades badly on megabyte files with data-URI images](https://forum.obsidian.md/t/improve-editor-performance-on-very-large-file-megabyte-with-embedded-data-uri-images/18959)
+  — laggy typing, selection and scrolling. A paper with figures and a crop per
+  equation is exactly that file. Self-contained already exists and is called
+  Export to EPUB.
+- **Obsidian's own attachment settings**, via
+  `fileManager.getAvailablePathForAttachment()`. The idiomatic answer for a
+  plugin that produces *attachments*, and we produce a package: every conversion
+  emits `figure-1.png`, so a shared attachments folder needs every name prefixed
+  with the title, and `meta.json` has nowhere to live at all.
+
+For what it is worth, the converters that solve this problem land in the same
+place: [obsidian-marker](https://github.com/L3-N0X/obsidian-marker) creates a
+folder named after the PDF with an asset subfolder (moving the PDF in is a
+setting, default off), and
+[pdf-ocr-obsidian](https://github.com/diegomarzaa/pdf-ocr-obsidian) writes
+`<pdf>/output.md` + `images/`.
+
 ## Compute backends
 
 Reflow probes for a GPU before every conversion (an adapter request — no

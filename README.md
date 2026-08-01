@@ -20,6 +20,14 @@ arrived with — often the only place its identifier survives. Turn off **Name
 folders by document title** to get the previous layout instead: named from the
 PDF's filename, with the PDF left where it was.
 
+The note sits *inside* its folder, which is the
+[folder note](https://lostpaul.github.io/obsidian-folder-notes/) convention: the
+Quick Switcher (`Cmd+O`) opens it by title from anywhere, and conversion opens it
+for you when it finishes. If you browse by folder and want the folder itself to
+open the note in one click, the **Folder Notes** community plugin does exactly
+that. [Why it is arranged this way](./plugin/README.md#why-the-note-is-inside-the-folder),
+and what the alternatives cost.
+
 Right-click any note → **Export to EPUB** for a `.epub` you can read on a Kindle
 or other e-reader, with the figures embedded and the equations as images of the
 original. Conversion can write one automatically too — see
