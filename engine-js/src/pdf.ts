@@ -56,11 +56,13 @@ export async function loadPdf(data: Uint8Array): Promise<PageSource> {
     useSystemFonts: true,
   }).promise;
 
+  let title: string | undefined;
   let author: string | undefined;
   let published: string | undefined;
   let description: string | undefined;
   try {
     const info = (await doc.getMetadata())?.info ?? {};
+    title = (info.Title || "").trim() || undefined;
     author = (info.Author || "").trim() || undefined;
     description = (info.Subject || "").trim() || undefined;
     published = parsePublished(info.CreationDate);
@@ -70,7 +72,7 @@ export async function loadPdf(data: Uint8Array): Promise<PageSource> {
 
   return {
     pageCount: doc.numPages,
-    meta: { author, published, description },
+    meta: { title, author, published, description },
     async renderPage(index: number): Promise<RenderedPage> {
       const page = await doc.getPage(index);
       const viewport = page.getViewport({ scale: RENDER_SCALE });
@@ -88,16 +90,21 @@ export async function loadPdf(data: Uint8Array): Promise<PageSource> {
 
       const content = await page.getTextContent();
       const textTokens: TextToken[] = [];
+      // Against the unscaled page: a text item's transform and its width/height
+      // are PDF user space and know nothing of RENDER_SCALE. Dividing by the
+      // scale-2 viewport put every token at half its true position. See the
+      // longer note in browser/pdf.ts.
+      const unscaled = page.getViewport({ scale: 1 });
       for (const item of content.items) {
         if (!("str" in item) || !item.str) continue;
         // transform = [a,b,c,d,e,f]; e,f is the baseline origin in PDF space.
         const tr = item.transform as number[];
         const e = tr[4] ?? 0;
         const f = tr[5] ?? 0;
-        const x = e / viewport.width;
-        const yBottom = f / viewport.height;
-        const h = (item.height || 0) / viewport.height;
-        const w = (item.width || 0) / viewport.width;
+        const x = e / unscaled.width;
+        const yBottom = f / unscaled.height;
+        const h = (item.height || 0) / unscaled.height;
+        const w = (item.width || 0) / unscaled.width;
         // pdf.js origin is bottom-left; convert to top-left fractions.
         const top = 1 - yBottom - h;
         textTokens.push({ str: item.str, bbox: { l: x, t: top, r: x + w, b: top + h } });

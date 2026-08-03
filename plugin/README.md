@@ -90,9 +90,10 @@ Attention Is All You Need/
   1706.03762v7.pdf
 ```
 
-The folder and the note are named from `doc.title` — the heading the model read
-off page 1, falling back to the PDF's filename when it found none, which is what
-everything used to be named after. `plugin/naming.ts` makes that a filename with
+The folder and the note are named from `doc.title`, chosen by
+[`core/title.ts`](../engine-js/src/core/title.ts) from three unreliable sources
+— see [Where the title comes from](#where-the-title-comes-from).
+`plugin/naming.ts` makes that a filename with
 [`filenamify`](https://github.com/sindresorhus/filenamify) at its default 100
 characters, then handles the two things a filename sanitizer has no way to know
 about Obsidian: `#^[]` are the link syntax, so a note whose name contains one
@@ -118,6 +119,76 @@ has links to, next to a near-identically named new one.
 Turning **Name folders by document title** off restores the previous layout
 exactly — `<pdf-stem>/<pdf-stem>.md`, PDF left where it was. The anti-nesting
 rule still applies, since burying a package is never what was wanted.
+
+### Where the title comes from
+
+Three sources, none reliable alone, in this order:
+
+1. **The PDF's own `/Title`.** The *authored* string — right case, right
+   punctuation, nothing transcribed and so nothing mis-transcribed.
+2. **The first heading the model read off page 1**, and page 1 only.
+3. **The filename**, which is not a title but is always there.
+
+Metadata goes first on evidence. Across a shelf of 8 converted papers it was
+right in all 4 cases where the heading was wrong or worse — two returned a
+section number, one returned the title in the ALL CAPS the page was typeset in,
+one dropped a letter from a word — and absent in 2 where the heading was right.
+There was no case where it was present, passed the filter, and lost.
+
+The filters are the whole point, since each source fails in its own way.
+`/Title` is where producers park a filename (`PLME0208_696-701.indd`, `Microsoft
+Word - draft v3.doc`), so anything wearing a document extension, a tool's
+placeholder, or the no-spaces-plus-digits shape of a filename is rejected. A
+heading is rejected when it names a *section* rather than the document —
+`1 Introduction`, `2. Preliminaries`, a bare `Abstract` — which is what a paper
+gets named after when page 1 fails and the search runs on into the body. That is
+also why the heading is now taken from page 1 only: before, the first heading
+found *anywhere* won, so a failed title page silently promoted page 2's section
+header to the title of the paper.
+
+"Numbered" is deliberately narrow: a section number is digits followed by a
+space, so `3D Gaussian Splatting…` is never one, and a real title that opens with
+a number keeps its place unless almost nothing follows it.
+
+### When the model reads nothing at all
+
+A title page whose lower half is one large figure can come back from the model as
+nothing but `<picture>` blocks. Generation ends normally, so no truncation
+warning fires, and the title, the authors and the entire abstract are simply not
+in the note — the failure is silent, and the note looks like a paper that opens
+at section 1.
+
+That page's text is sitting complete in the PDF's own text layer, which both
+loaders have extracted for every page since the beginning and nothing has ever
+read. [`core/textlayer.ts`](../engine-js/src/core/textlayer.ts) now reads it,
+under three guards, because the text layer is a bag of positioned strings with no
+structure and would be a downgrade anywhere else:
+
+- Only when the model produced **no prose at all** for that page. Images are
+  discounted; a page of nothing but equations counts as read, and rescuing it
+  would replace transcribed LaTeX with the mangled glyph runs a formula's text
+  layer actually contains.
+- Only when at least 200 characters survive, which is what separates a page that
+  was lost from a page that genuinely is one big picture.
+- **Minus the regions the model did crop.** The pictures are the only thing a
+  failed page yields, and they are worth reading as an instruction: a chart's
+  axis labels are text in the layer and noise in a paragraph, and the note
+  already shows that region as an image.
+
+Word boundaries come from measuring the gap between runs, not from where the runs
+break — small caps split `KIMI` into `K` and `IMI` with no gap at all, so joining
+every run with a space gives `K IMI K3` and joining with none gives
+`KIMIK3:OPENFRONTIER`. Hyphenation at a line break is left alone: whether a
+trailing `-` belongs to the word is not decidable here, and guessing wrong
+damages text that is otherwise correct.
+
+The note says where the text came from, both in the banner and at the page.
+
+Fixing this exposed a latent bug worth knowing about: those text-layer
+coordinates were normalized against the **scale-2 raster** rather than the
+unscaled page, so every token sat at half its true position — a title visibly at
+the top of the page was recorded at `t=0.55`. It had been wrong in both loaders
+from the start and cost nothing, because until now nothing read them.
 
 ### Why the note is *inside* the folder
 

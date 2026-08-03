@@ -219,11 +219,13 @@ export async function loadPdfBrowser(
 
   const doc = await pdfjs.getDocument({ data, isEvalSupported: false, ...docParams(opts) }).promise;
 
+  let title: string | undefined;
   let author: string | undefined;
   let published: string | undefined;
   let description: string | undefined;
   try {
     const info = (await doc.getMetadata())?.info ?? {};
+    title = (info.Title || "").trim() || undefined;
     author = (info.Author || "").trim() || undefined;
     description = (info.Subject || "").trim() || undefined;
     published = parsePublished(info.CreationDate);
@@ -233,7 +235,7 @@ export async function loadPdfBrowser(
 
   return {
     pageCount: doc.numPages,
-    meta: { author, published, description },
+    meta: { title, author, published, description },
     async renderPage(index: number): Promise<RenderedPage> {
       const page = await doc.getPage(index);
       const viewport = page.getViewport({ scale: RENDER_SCALE });
@@ -248,15 +250,24 @@ export async function loadPdfBrowser(
 
       const content = await page.getTextContent();
       const textTokens: TextToken[] = [];
+      // Normalized against the *unscaled* page, not the raster. A text item's
+      // transform and its width/height are PDF user space, which does not know
+      // RENDER_SCALE exists; dividing them by a scale-2 viewport put every token
+      // at half its true position — the title of a paper, visibly at the top of
+      // the page, was recorded at t=0.55. Nothing consumed these coordinates
+      // until the text-layer rescue in core/textlayer.ts, which compares them
+      // against bounding boxes that *are* in page fractions, so the error stayed
+      // invisible for as long as it was harmless.
+      const unscaled = page.getViewport({ scale: 1 });
       for (const item of content.items) {
         if (!("str" in item) || !item.str) continue;
         const tr = item.transform as number[];
         const e = tr[4] ?? 0;
         const f = tr[5] ?? 0;
-        const x = e / viewport.width;
-        const yBottom = f / viewport.height;
-        const th = (item.height || 0) / viewport.height;
-        const tw = (item.width || 0) / viewport.width;
+        const x = e / unscaled.width;
+        const yBottom = f / unscaled.height;
+        const th = (item.height || 0) / unscaled.height;
+        const tw = (item.width || 0) / unscaled.width;
         const top = 1 - yBottom - th;
         textTokens.push({ str: item.str, bbox: { l: x, t: top, r: x + tw, b: top + th } });
       }

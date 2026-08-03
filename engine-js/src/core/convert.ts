@@ -11,10 +11,13 @@ import { parseDocTags } from "../doctags.js";
 import { frontmatter } from "../frontmatter.js";
 import { cleanMath, fixFormula, formulaLooksTruncated } from "../mathjax.js";
 import { warnImageOnly } from "../meta.js";
+import { MIN_RESCUE_CHARS, textLayerParagraphs } from "./textlayer.js";
+import { chooseTitle } from "./title.js";
 import type {
   AssembledDocument,
   AssembledFigure,
   AssembledFormula,
+  BBox,
   PageSource,
   Vlm,
 } from "./types.js";
@@ -112,6 +115,18 @@ function throwIfAborted(signal?: { aborted: boolean }): void {
   if (signal?.aborted) throw abortError();
 }
 
+/**
+ * Did the model read anything off this page, or only draw boxes on it?
+ *
+ * Images are stripped and everything else counts — a page of nothing but
+ * equations was still *read*, and rescuing it from the text layer would replace
+ * transcribed LaTeX with the mangled glyph runs that a formula's text layer
+ * actually contains.
+ */
+function hasProse(markdown: string): boolean {
+  return markdown.replace(/!\[[^\]]*\]\([^)]*\)/g, "").trim().length > 0;
+}
+
 export interface AssembleOptions {
   /** Process at most this many pages (0/undefined = all). */
   maxPages?: number;
@@ -148,6 +163,8 @@ export async function assembleDocument(
   let formulaCount = 0;
   /** Pages whose tables lost merged cells — named, so the warning is locatable. */
   const spanPages: number[] = [];
+  /** Pages the model returned no prose for, read out of the text layer instead. */
+  const rescuedPages: number[] = [];
   let inference = 0;
   const perPage: Array<{ page: number; ms: number; genTokens: number; tokensPerSec: number }> = [];
 
@@ -182,7 +199,11 @@ export async function assembleDocument(
     }
 
     const parsed = parseDocTags(docTags, figCount, formulaCount);
-    if (title === null) title = parsed.title;
+    // Page 1 only. The heading this picks is the document's title *if* it came
+    // off the title page; taken from any page, it is whatever heading the
+    // document happens to reach first, which on a paper whose page 1 failed is
+    // "1 Introduction". `chooseTitle` is the one that decides, below.
+    if (p === 1) title = parsed.title;
     if (parsed.droppedSpans) spanPages.push(p);
 
     for (const fig of parsed.figures) {
@@ -215,16 +236,39 @@ export async function assembleDocument(
     // which `suspect` already requires.
     bodyParts.push(annotateSuspectFormulas(parsed.markdown, pageFormulas));
 
+    // A page that came back as pictures and nothing else. Generation ended
+    // normally, so no truncation warning fires, and the page's prose — on a
+    // title page, the entire abstract — would simply be absent from the note
+    // with nothing anywhere saying so. The text layer still has it.
+    const issues: string[] = [];
+    if (!hasProse(parsed.markdown)) {
+      const rescued = textLayerParagraphs(
+        page.textTokens,
+        parsed.figures.map((f) => f.bbox).filter((b): b is BBox => b !== null),
+      );
+      if (rescued.length >= MIN_RESCUE_CHARS) {
+        bodyParts.push(rescued);
+        rescuedPages.push(p);
+        issues.push(
+          "no text was recognized on this page; the text above comes from the PDF's own " +
+            "text layer, so it has no headings, tables or equations",
+        );
+      }
+    }
+
     // Flag the damage where the reader will meet it, not only in a list at the
     // top that points at a page number the reflowed markdown no longer has.
-    const issues: string[] = [];
     if (truncated) issues.push(`generation stopped early (${truncated}), so text may be missing here`);
     if (parsed.droppedSpans) issues.push("a table here had merged cells that render blank");
     if (issues.length) bodyParts.push(pageMarker(p, issues));
   }
 
   const tAssemble = Date.now();
-  const finalTitle = (title && title.trim()) || opts.titleFallback;
+  const finalTitle = chooseTitle({
+    metadata: pages.meta.title,
+    firstPageHeading: title,
+    fallback: opts.titleFallback,
+  });
   const body = cleanMath(bodyParts.join("\n\n"));
 
   // Warnings are settled before the markdown is assembled, because both the
@@ -237,6 +281,13 @@ export async function assembleDocument(
     warnings.push(
       `table${spanPages.length > 1 ? "s" : ""} on page${spanPages.length > 1 ? "s" : ""} ` +
         `${spanPages.join(", ")} contained merged cells rendered blank — verify against source`,
+    );
+  }
+  if (rescuedPages.length) {
+    warnings.push(
+      `page${rescuedPages.length > 1 ? "s" : ""} ${rescuedPages.join(", ")}: ` +
+        "no text recognized — the text there was read from the PDF's own text layer, " +
+        "so it has no headings, tables or equations",
     );
   }
   const suspectCount = formulas.filter((f) => f.suspect).length;

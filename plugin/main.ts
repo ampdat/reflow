@@ -649,6 +649,14 @@ export default class ReflowPlugin extends Plugin {
     attach();
     const started = performance.now();
     try {
+      // Captured before the engine runs, because this exact string is what the
+      // engine stamps into the note's frontmatter `source:` — and it is what has
+      // to be found there afterwards to be corrected. Reading `file.path` again
+      // later would miss the case where the PDF moved *during* the run: two
+      // conversions of the same paper can overlap (each takes minutes, and
+      // starting a second is one click), and the first one to finish moves the
+      // file out from under the second.
+      const sourceLabel = file.path;
       const data = new Uint8Array(await this.app.vault.readBinary(file));
       const doc = await this.runEngine(data, file, controller.signal, {
         onProgress: (p) => {
@@ -707,7 +715,6 @@ export default class ReflowPlugin extends Plugin {
       // and left the PDF where the reader put it; before the note, whose
       // `source:` has to name where the PDF actually ended up.
       const layoutWarnings: string[] = [];
-      const sourceBefore = file.path;
       if (this.settings.folderByTitle) {
         const problem = await this.movePdfIntoPackage(file, folder);
         if (problem) {
@@ -717,9 +724,9 @@ export default class ReflowPlugin extends Plugin {
         }
       }
       const markdown =
-        file.path === sourceBefore
+        file.path === sourceLabel
           ? doc.markdown
-          : ReflowPlugin.retargetSource(doc.markdown, sourceBefore, file.path);
+          : ReflowPlugin.retargetSource(doc.markdown, sourceLabel, file.path);
       await this.writeText(mdPath, markdown);
 
       // The plugin used to write only the markdown and the figures, which left

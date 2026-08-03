@@ -28,6 +28,11 @@ export interface RenderedPage {
 }
 
 export interface PdfMetaFields {
+  /**
+   * The PDF's `/Title`. Frequently the authored title verbatim, and frequently
+   * a filename the producer left behind — `core/title.ts` decides which.
+   */
+  title?: string;
   author?: string;
   published?: string;
   description?: string;

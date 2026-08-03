@@ -4,7 +4,7 @@
 
 Right-click a PDF in your vault → **Convert to Markdown**. A vision model runs
 locally on your GPU and gathers the whole paper into one folder, named with the
-title it read off the page:
+document's own title:
 
 ```
 Attention Is All You Need/
